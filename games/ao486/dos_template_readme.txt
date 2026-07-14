@@ -1,1 +1,1 @@
-Download this file, then place in this folder: https://gofile.io/d/ZDANyb
+Download this file, then place in this folder as "dos_template.vhd": https://gofile.io/d/ZDANyb
