@@ -1,0 +1,172 @@
+#!/usr/bin/env python3
+"""
+mkmgl - Generate .mgl launcher files for ao486 DOS/Win 3.1 games on MiSTer.
+
+Usage:
+    mkmgl -dos "Display Name" [source_folder]
+    mkmgl -win31 "Display Name" [source_folder]
+
+Scans source_folder (default: current directory) for recognized disk
+image files, categorizes them (hard drive / CD / floppy), prompts for a
+choice if more than one candidate exists in a category, and writes a
+MiSTer .mgl launcher file into /media/fat/_DOS Games or
+/media/fat/_Win 3.1 Games (created if needed), named "<Display Name>.mgl".
+"""
+
+import os
+import sys
+
+AO486_ROOT = "/media/fat/games/AO486"
+DOS_GAMES_DIR = "/media/fat/_DOS Games"
+WIN31_GAMES_DIR = "/media/fat/_Win 3.1 Games"
+
+HDD_EXTS = {".vhd"}
+CD_EXTS = {".chd", ".iso", ".cue"}
+FLOPPY_EXTS = {".img", ".ima", ".dsk", ".vfd", ".imz", ".flp"}
+
+
+def usage_and_exit():
+    print('Usage: mkmgl -dos|-win31 "Display Name" [source_folder]')
+    print()
+    print("  -dos          Place the .mgl in /media/fat/_DOS Games")
+    print("  -win31        Place the .mgl in /media/fat/_Win 3.1 Games")
+    print()
+    print("  source_folder defaults to the current directory if omitted.")
+    sys.exit(1)
+
+
+def scan_candidates(folder):
+    hdd, cd, floppy = [], [], []
+    try:
+        entries = sorted(os.listdir(folder))
+    except OSError as e:
+        print(f"Error: cannot read folder {folder}: {e}")
+        sys.exit(1)
+
+    for name in entries:
+        full = os.path.join(folder, name)
+        if not os.path.isfile(full):
+            continue
+        ext = os.path.splitext(name)[1].lower()
+        if ext in HDD_EXTS:
+            hdd.append(name)
+        elif ext in CD_EXTS:
+            cd.append(name)
+        elif ext in FLOPPY_EXTS:
+            floppy.append(name)
+
+    # A .chd always wins over .iso/.cue if one exists -- treat the
+    # others as not present at all rather than competing choices.
+    if any(n.lower().endswith(".chd") for n in cd):
+        cd = [n for n in cd if n.lower().endswith(".chd")]
+
+    return hdd, cd, floppy
+
+
+def choose(candidates, label):
+    """Prompts for a choice if there's more than one candidate. Returns
+    the chosen filename, or None if the list is empty."""
+    if not candidates:
+        return None
+    if len(candidates) == 1:
+        return candidates[0]
+
+    print()
+    print(f"Multiple {label} files found:")
+    for i, name in enumerate(candidates, 1):
+        print(f"  {i}. {name}")
+    while True:
+        choice = input(f"Select the {label} to use [1-{len(candidates)}]: ").strip()
+        if choice.isdigit() and 1 <= int(choice) <= len(candidates):
+            return candidates[int(choice) - 1]
+        print("Invalid choice, try again.")
+
+
+def rel_path(source_folder, filename):
+    """Path relative to the ao486 media root, since that's what the
+    core resolves file="" paths against. Falls back to an absolute
+    path (with a warning) if source_folder isn't actually under it."""
+    full = os.path.join(source_folder, filename)
+    rel = os.path.relpath(full, AO486_ROOT)
+    if rel.startswith(".."):
+        print(f"Warning: {full}")
+        print(f"is not inside {AO486_ROOT}; using an absolute path instead of a relative one.")
+        return full
+    return rel.replace(os.sep, "/")
+
+
+def main():
+    args = sys.argv[1:]
+    if len(args) < 2 or args[0] in ("-h", "--help"):
+        usage_and_exit()
+
+    type_flag = args[0]
+    if type_flag == "-dos":
+        target_dir = DOS_GAMES_DIR
+    elif type_flag == "-win31":
+        target_dir = WIN31_GAMES_DIR
+    else:
+        print(f"Error: unrecognized type flag '{type_flag}'")
+        usage_and_exit()
+
+    display_name = args[1]
+    source_folder = args[2] if len(args) > 2 else os.getcwd()
+    source_folder = os.path.realpath(source_folder)
+
+    if not os.path.isdir(source_folder):
+        print(f"Error: source folder not found: {source_folder}")
+        sys.exit(1)
+
+    hdd_candidates, cd_candidates, floppy_candidates = scan_candidates(source_folder)
+
+    if not hdd_candidates and not cd_candidates and not floppy_candidates:
+        all_exts = sorted(HDD_EXTS | CD_EXTS | FLOPPY_EXTS)
+        print(f"Error: no recognized disk image files found in {source_folder}")
+        print(f"(looked for: {', '.join(all_exts)})")
+        sys.exit(1)
+
+    hdd_choice = choose(hdd_candidates, "hard drive (.vhd)")
+    cd_choice = choose(cd_candidates, "CD image")
+    floppy_choice = choose(floppy_candidates, "floppy image")
+
+    lines = ["<mistergamedescription>", "    <rbf>_computer/ao486</rbf>"]
+    if floppy_choice:
+        lines.append(f'    <file delay="0" type="s" index="0" path="{rel_path(source_folder, floppy_choice)}"/>')
+    if hdd_choice:
+        lines.append(f'    <file delay="0" type="s" index="2" path="{rel_path(source_folder, hdd_choice)}"/>')
+    if cd_choice:
+        lines.append(f'    <file delay="0" type="s" index="4" path="{rel_path(source_folder, cd_choice)}"/>')
+    lines.append('    <reset delay="1"/>')
+    lines.append("</mistergamedescription>")
+    content = "\n".join(lines) + "\n"
+
+    os.makedirs(target_dir, exist_ok=True)
+    out_path = os.path.join(target_dir, f"{display_name}.mgl")
+
+    if os.path.exists(out_path):
+        answer = input(f"{out_path} already exists. Overwrite? [y/N]: ").strip().lower()
+        if answer != "y":
+            print("Aborted; nothing was written.")
+            sys.exit(0)
+
+    try:
+        with open(out_path, "w", newline="\n") as f:
+            f.write(content)
+    except OSError as e:
+        print(f"Error writing {out_path}: {e}")
+        sys.exit(1)
+
+    print()
+    print(f"Wrote: {out_path}")
+    if hdd_choice:
+        print(f"  Hard drive: {hdd_choice}")
+    if cd_choice:
+        print(f"  CD image:   {cd_choice}")
+    if floppy_choice:
+        print(f"  Floppy:     {floppy_choice}")
+    print()
+    print(content, end="")
+
+
+if __name__ == "__main__":
+    main()

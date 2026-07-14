@@ -1,0 +1,418 @@
+#!/bin/bash
+# resizevhd - resize an existing ao486 VHD (larger or smaller) while
+# preserving all its files exactly as-is: system files, game files,
+# AUTOEXEC.BAT, CONFIG.SYS, everything, byte-for-byte. Unlike mkvhd,
+# this never touches file content -- it only changes the container.
+#
+# Usage:
+#   resizevhd <name.vhd>
+#
+# Reports the current file size and a suggested new size (based on
+# actual used space, same headroom logic as mkvhd), lets you accept
+# the suggestion, type your own size, or cancel. By default the
+# resized file replaces the original under the SAME filename, so any
+# .mgl launcher pointing at it keeps working -- you'll be asked
+# whether to actually delete the original or keep it as a backup.
+
+set -e
+
+MBR_WRITER="/media/fat/linux/make_mbr.py"
+BPB_FIXER="/media/fat/linux/fix_bpb.py"
+MCOPY="/media/fat/linux/mcopy"
+MATTRIB="/media/fat/linux/mattrib"
+LOOP=""
+STAGE_DIR=""
+VERIFY_DIR=""
+NEW_VHD=""
+BOOT_SECTOR_ORIG=""
+ATTR_MANIFEST=""
+
+cleanup() {
+    [ -n "$STAGE_DIR" ] && rm -rf "$STAGE_DIR" 2>/dev/null || true
+    [ -n "$VERIFY_DIR" ] && rm -rf "$VERIFY_DIR" 2>/dev/null || true
+    [ -n "$ATTR_MANIFEST" ] && rm -f "$ATTR_MANIFEST" 2>/dev/null || true
+    [ -n "$BOOT_SECTOR_ORIG" ] && rm -f "$BOOT_SECTOR_ORIG" 2>/dev/null || true
+    [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+loop_attach() {
+    local loop="$1" file="$2" offset="$3" attempt
+    for attempt in 1 2 3 4 5; do
+        if losetup -o "$offset" "$loop" "$file" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    losetup -o "$offset" "$loop" "$file"
+}
+
+# Same reliability limit found in mkvhd's mtools-based bulk copies
+# (Section 6.7 of the project handoff): mtools' recursive mcopy -s
+# cannot be trusted for large, real-world copies -- confirmed there
+# to silently drop entire files/subdirectories, or report false "No
+# space left on device" errors, on real archives, despite passing
+# every small-scale synthetic test. resizevhd's own bulk file-copy
+# step carries the identical latent risk (it copies a whole existing
+# VHD's worth of real content, not a handful of small files), so it
+# uses the same fix here: a kernel loop-mount + `cp -r` instead of
+# mtools. Needs root (loop-mount), same as the mkfs.vfat step
+# already does.
+loop_copy_in() {
+    local vhd="$1" offset="$2" dest_subpath="$3"
+    shift 3
+    local sources=("$@")
+    local loop mnt target status=0
+
+    loop="$(losetup -f)"
+    if ! loop_attach "$loop" "$vhd" "$offset"; then
+        echo "Error: could not attach loop device for $vhd"
+        return 1
+    fi
+
+    mnt="$(mktemp -d)"
+    if ! mount -t vfat -o rw "$loop" "$mnt" 2>/dev/null; then
+        echo "Error: could not mount $vhd for copying"
+        losetup -d "$loop" 2>/dev/null
+        rmdir "$mnt" 2>/dev/null
+        return 1
+    fi
+
+    if [ -n "$dest_subpath" ]; then
+        target="$mnt/$dest_subpath"
+        mkdir -p "$target"
+    else
+        target="$mnt"
+    fi
+
+    for src in "${sources[@]}"; do
+        if ! cp -r "$src" "$target/"; then
+            status=1
+            break
+        fi
+    done
+
+    sync
+    umount "$mnt" 2>/dev/null
+    for attempt in 1 2 3 4 5; do
+        losetup -d "$loop" 2>/dev/null && break
+        sleep 1
+    done
+    rmdir "$mnt" 2>/dev/null
+    return $status
+}
+
+if [ -z "$1" ]; then
+    echo "Usage: resizevhd <name.vhd>"
+    exit 1
+fi
+
+SOURCE="$1"
+if [ ! -f "$SOURCE" ]; then
+    echo "Error: file not found: $SOURCE"
+    exit 1
+fi
+
+SOURCE="$(realpath "$SOURCE")"
+SOURCE_DIR="$(dirname "$SOURCE")"
+SOURCE_NAME="$(basename "$SOURCE")"
+
+if [ ! -x "/media/fat/linux/mtools" ]; then
+    echo "Error: /media/fat/linux/mtools not found or not executable"
+    exit 1
+fi
+if [ ! -e "$MCOPY" ]; then
+    ln -sf mtools "$MCOPY" 2>/dev/null
+fi
+if [ ! -e "$MATTRIB" ]; then
+    ln -sf mtools "$MATTRIB" 2>/dev/null
+fi
+for f in "$MBR_WRITER" "$BPB_FIXER"; do
+    if [ ! -f "$f" ]; then
+        echo "Error: required file not found: $f"
+        exit 1
+    fi
+done
+
+echo "Reading $SOURCE_NAME..."
+STAGE_DIR="$(mktemp -d)"
+if ! setsid "$MCOPY" -s -i "$SOURCE@@$((128 * 512))" :: "$STAGE_DIR" < /dev/null; then
+    echo "Error: failed to read $SOURCE"
+    exit 1
+fi
+if [ -z "$(find "$STAGE_DIR" -mindepth 1 -maxdepth 1)" ]; then
+    echo "Error: nothing was read from $SOURCE -- is it a valid VHD?"
+    exit 1
+fi
+
+# mtools' image-to-local copy has no way to preserve DOS-specific
+# attributes (hidden/system/read-only) on a Unix filesystem -- there's
+# no equivalent concept to store them in. Real MS-DOS marks IO.SYS/
+# MSDOS.SYS (and often DRVSPACE.BIN) hidden+system+read-only, and the
+# real boot loader code cares about this: losing these attributes
+# during the round trip produced a VHD that looked structurally fine
+# but hung on real ao486 hardware (confirmed the hard way). Capture
+# the source's actual attribute bytes now, before anything else
+# touches it, so they can be faithfully restored after the copy.
+# Real MS-DOS boot code is tightly paired with the specific IO.SYS/
+# MSDOS.SYS it was written alongside -- different DOS versions (e.g.
+# MS-DOS 6.22 vs the MS-DOS 7.1 that ships with Windows 95/98) use
+# genuinely incompatible boot mechanisms. Writing a fresh boot sector
+# via a different DOS version's SYS command, paired with the source's
+# own (different-version) system files, produces a VHD that looks
+# completely valid by every structural check but hangs at "Booting
+# from Hard Disk..." on real ao486 hardware -- confirmed the hard way
+# via multiple real boot tests. The fix: preserve the source's own
+# boot sector CODE (which is already correctly paired with its own
+# system files) and only replace the BPB data fields that actually
+# need to differ for the new size.
+BOOT_SECTOR_ORIG="$(mktemp)"
+dd if="$SOURCE" bs=512 skip=128 count=1 of="$BOOT_SECTOR_ORIG" 2>/dev/null
+
+ATTR_MANIFEST="$(mktemp)"
+python3 -c "
+import struct
+with open('$SOURCE', 'rb') as f:
+    f.seek(128*512)
+    boot = f.read(512)
+    reserved = struct.unpack('<H', boot[14:16])[0]
+    numfats = boot[16]
+    fatsz16 = struct.unpack('<H', boot[22:24])[0]
+    root_entries = struct.unpack('<H', boot[17:19])[0]
+    root_offset_sectors = reserved + numfats * fatsz16
+    f.seek(128*512 + root_offset_sectors*512)
+    data = f.read(root_entries * 32)
+    for i in range(root_entries):
+        e = data[i*32:(i+1)*32]
+        if e[0] == 0x00:
+            break
+        if e[0] == 0xE5:
+            continue
+        attr = e[11]
+        if attr == 0x0F or (attr & 0x10):
+            continue
+        if attr & 0x07:
+            name = e[0:8].decode('ascii', errors='replace').strip()
+            ext = e[8:11].decode('ascii', errors='replace').strip()
+            fname = f'{name}.{ext}' if ext else name
+            print(f'{fname} {attr}')
+" > "$ATTR_MANIFEST"
+
+ACTUAL_BYTES="$(du -sb "$STAGE_DIR" | awk '{print $1}')"
+CURRENT_FILE_MB=$(( ($(stat -c '%s' "$SOURCE") + 1048575) / 1048576 ))
+
+HEADROOM=$(( ACTUAL_BYTES / 4 ))
+if [ "$HEADROOM" -lt 102400 ]; then
+    HEADROOM=102400
+fi
+TOTAL_BYTES=$(( ACTUAL_BYTES + HEADROOM ))
+SUGGESTED_MB=$(( (TOTAL_BYTES + 1048575) / 1048576 ))
+if [ "$SUGGESTED_MB" -lt 2 ]; then
+    SUGGESTED_MB=2
+fi
+if [ "$SUGGESTED_MB" -ge 2048 ]; then
+    SUGGESTED_MB=2047
+fi
+
+echo
+echo "  Current file size:   ${CURRENT_FILE_MB} MB"
+echo "  Actual content used: $(( (ACTUAL_BYTES + 1023) / 1024 )) KB"
+echo "  Suggested new size:  ${SUGGESTED_MB} MB"
+echo
+read -p "Enter new size in MB, or 'c' to cancel [${SUGGESTED_MB}]: " SIZE_MB
+if [ "$SIZE_MB" = "c" ] || [ "$SIZE_MB" = "C" ]; then
+    echo "Cancelled; no changes made."
+    exit 0
+fi
+if [ -z "$SIZE_MB" ]; then
+    SIZE_MB="$SUGGESTED_MB"
+fi
+
+if ! echo "$SIZE_MB" | grep -Eq '^[0-9]+$'; then
+    echo "Error: size must be a whole number."
+    exit 1
+fi
+if [ "$SIZE_MB" -lt 2 ] || [ "$SIZE_MB" -ge 2048 ]; then
+    echo "Error: size must be between 2 and 2047 MB."
+    exit 1
+fi
+NEEDED_MB=$(( (ACTUAL_BYTES + 1048575) / 1048576 ))
+if [ "$SIZE_MB" -lt "$NEEDED_MB" ]; then
+    echo "Error: ${SIZE_MB}MB is too small to hold the existing content (~${NEEDED_MB}MB)."
+    exit 1
+fi
+
+NEW_VHD="$(mktemp -u "$SOURCE_DIR/.resizevhd_XXXXXX.vhd")"
+echo
+echo "Creating ${SIZE_MB}MB container..."
+truncate -s "${SIZE_MB}M" "$NEW_VHD"
+python3 "$MBR_WRITER" "$NEW_VHD" "$SIZE_MB" >/dev/null
+
+echo "Formatting filesystem..."
+FORCE_FAT16=""
+if [ "$SIZE_MB" -lt 16 ]; then
+    CLUSTER_SECTORS=1
+elif [ "$SIZE_MB" -le 128 ]; then
+    CLUSTER_SECTORS=4; FORCE_FAT16=1
+elif [ "$SIZE_MB" -le 256 ]; then
+    CLUSTER_SECTORS=8; FORCE_FAT16=1
+elif [ "$SIZE_MB" -le 512 ]; then
+    CLUSTER_SECTORS=16; FORCE_FAT16=1
+elif [ "$SIZE_MB" -le 1024 ]; then
+    CLUSTER_SECTORS=32; FORCE_FAT16=1
+else
+    CLUSTER_SECTORS=64; FORCE_FAT16=1
+fi
+
+LOOP=$(losetup -f)
+loop_attach "$LOOP" "$NEW_VHD" $((128 * 512))
+if [ -n "$FORCE_FAT16" ]; then
+    MKFS_OUTPUT="$(mkfs.vfat -I -F 16 -s "$CLUSTER_SECTORS" "$LOOP" 2>&1)"
+else
+    MKFS_OUTPUT="$(mkfs.vfat -I -s "$CLUSTER_SECTORS" "$LOOP" 2>&1)"
+fi
+MKFS_STATUS=$?
+losetup -d "$LOOP"
+LOOP=""
+
+if [ "$MKFS_STATUS" -ne 0 ]; then
+    echo "Error: mkfs.vfat failed:"
+    echo "$MKFS_OUTPUT"
+    rm -f "$NEW_VHD"
+    exit 1
+fi
+
+echo "Fixing BPB for MS-DOS compatibility..."
+python3 "$BPB_FIXER" "$NEW_VHD" "$SIZE_MB" >/dev/null
+
+echo "Writing DOS boot sector (preserving original boot code)..."
+if ! python3 -c "
+with open('$BOOT_SECTOR_ORIG', 'rb') as f:
+    source = bytearray(f.read(512))
+if len(source) != 512:
+    raise SystemExit('source boot sector is not 512 bytes')
+with open('$NEW_VHD', 'r+b') as f:
+    f.seek($((128 * 512)))
+    target = bytearray(f.read(512))
+    # Bytes 0-10 (jump instruction + OEM name) and 62-511 (the actual
+    # boot code, embedded strings, and 0x55AA signature) come from the
+    # source -- this is what keeps it paired with the source's own
+    # IO.SYS/MSDOS.SYS. Bytes 11-61 (the BPB + extended BPB) stay from
+    # the fresh fix_bpb.py output just written, since those describe
+    # the NEW container's actual size/geometry and must be correct
+    # for it, not for the source's original (different) size.
+    merged = bytearray(target)
+    merged[0:11] = source[0:11]
+    merged[62:512] = source[62:512]
+    f.seek($((128 * 512)))
+    f.write(bytes(merged))
+"; then
+    echo "Error: failed to write boot sector."
+    rm -f "$NEW_VHD"
+    exit 1
+fi
+
+echo "Copying files..."
+# IO.SYS/MSDOS.SYS/COMMAND.COM (if present in the source) get copied
+# FIRST, separately from everything else. SYS C: already wrote its own
+# copies of these onto the empty disk, claiming early, contiguous
+# clusters the way real DOS always does -- but the source's own
+# versions may genuinely differ (confirmed happening in practice: a
+# VHD built from different DOS 6.22 media than disk1.img), so they
+# still need to be overwritten with the source's exact bytes. Doing
+# that FIRST, before any other content exists, means they still claim
+# priority early cluster space instead of landing wherever's left
+# after megabytes of game data -- copying everything in one pass
+# pushed IO.SYS to a cluster deep in the disk on real content, which
+# hung on real ao486 hardware (confirmed via an actual boot test)
+# despite looking completely valid under every other check.
+SYS_FILE_NAMES=(IO.SYS MSDOS.SYS COMMAND.COM)
+SYS_FILE_ITEMS=()
+shopt -s nocasematch
+for f in "${SYS_FILE_NAMES[@]}"; do
+    if [ -f "$STAGE_DIR/$f" ]; then
+        SYS_FILE_ITEMS+=("$STAGE_DIR/$f")
+    fi
+done
+shopt -u nocasematch
+if [ "${#SYS_FILE_ITEMS[@]}" -gt 0 ]; then
+    if ! setsid "$MCOPY" -D o -D O -i "$NEW_VHD@@$((128 * 512))" "${SYS_FILE_ITEMS[@]}" :: < /dev/null; then
+        echo "Error: failed to write system files onto the new container."
+        rm -f "$NEW_VHD"
+        exit 1
+    fi
+fi
+
+shopt -s dotglob nullglob
+STAGE_ITEMS=("$STAGE_DIR"/*)
+shopt -u dotglob nullglob
+REMAINING_ITEMS=()
+for item in "${STAGE_ITEMS[@]}"; do
+    base="$(basename "$item")"
+    skip=0
+    for f in "${SYS_FILE_NAMES[@]}"; do
+        if [ "$base" = "$f" ]; then
+            skip=1
+            break
+        fi
+    done
+    [ "$skip" -eq 0 ] && REMAINING_ITEMS+=("$item")
+done
+if [ "${#REMAINING_ITEMS[@]}" -gt 0 ]; then
+    if ! loop_copy_in "$NEW_VHD" $((128 * 512)) "" "${REMAINING_ITEMS[@]}"; then
+        echo "Error: failed to copy files onto the new container."
+        rm -f "$NEW_VHD"
+        exit 1
+    fi
+fi
+
+# Restore any hidden/system/read-only attributes captured from the
+# source -- the copy above necessarily lost them, since a plain Unix
+# file (what the staging directory holds) has no way to represent
+# those DOS-specific bits.
+if [ -s "$ATTR_MANIFEST" ]; then
+    while read -r FNAME FATTR; do
+        [ -z "$FNAME" ] && continue
+        MATTRIB_FLAGS=()
+        [ $((FATTR & 1)) -ne 0 ] && MATTRIB_FLAGS+=("+r")
+        [ $((FATTR & 2)) -ne 0 ] && MATTRIB_FLAGS+=("+h")
+        [ $((FATTR & 4)) -ne 0 ] && MATTRIB_FLAGS+=("+s")
+        if [ "${#MATTRIB_FLAGS[@]}" -gt 0 ]; then
+            setsid "$MATTRIB" "${MATTRIB_FLAGS[@]}" -i "$NEW_VHD@@$((128 * 512))" "::$FNAME" < /dev/null
+        fi
+    done < "$ATTR_MANIFEST"
+fi
+
+echo "Verifying copy..."
+VERIFY_DIR="$(mktemp -d)"
+setsid "$MCOPY" -s -i "$NEW_VHD@@$((128 * 512))" :: "$VERIFY_DIR" < /dev/null
+if ! diff -q <(cd "$STAGE_DIR" && find . -type f -exec md5sum {} \; | sort) <(cd "$VERIFY_DIR" && find . -type f -exec md5sum {} \; | sort) >/dev/null 2>&1; then
+    echo "Error: verification failed -- copied content doesn't match the original."
+    rm -rf "$VERIFY_DIR"
+    VERIFY_DIR=""
+    rm -f "$NEW_VHD"
+    exit 1
+fi
+rm -rf "$VERIFY_DIR"
+VERIFY_DIR=""
+echo "Verified: all files match the original exactly."
+
+echo
+echo "======================================================="
+echo " Resize complete: ${CURRENT_FILE_MB}MB -> ${SIZE_MB}MB"
+echo "======================================================="
+read -p "Replace the original file $SOURCE_NAME? [y/N]: " answer
+if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+    rm -f "$SOURCE"
+    mv "$NEW_VHD" "$SOURCE"
+    NEW_VHD=""
+    echo "Replaced. $SOURCE_NAME is now ${SIZE_MB}MB."
+else
+    BACKUP_NAME="${SOURCE}.bak-$(date +%Y%m%d%H%M%S)"
+    mv "$SOURCE" "$BACKUP_NAME"
+    mv "$NEW_VHD" "$SOURCE"
+    NEW_VHD=""
+    echo "Original kept as: $(basename "$BACKUP_NAME")"
+    echo "$SOURCE_NAME is now ${SIZE_MB}MB."
+fi
+echo "======================================================="

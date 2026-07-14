@@ -1,0 +1,18 @@
+#!/bin/bash
+# umountchd - unmount and fully clean up after mountchd. Must be
+# sourced (". umountchd") since it needs to cd your shell out of the
+# mounted directory first -- you can't unmount a filesystem while a
+# process (your own shell) has its current directory inside it.
+
+EXTRACT_DIR="/media/fat/linux/.mountchd_extract"
+MOUNTPOINT="/media/fat/linux/.mountchd_mount"
+
+cd /media/fat
+
+if mount | grep -q " $MOUNTPOINT "; then
+    umount "$MOUNTPOINT"
+fi
+rmdir "$MOUNTPOINT" 2>/dev/null
+rm -rf "$EXTRACT_DIR"
+
+echo "Unmounted and cleaned up."

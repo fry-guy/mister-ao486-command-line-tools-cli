@@ -1,0 +1,18 @@
+#!/bin/bash
+# umountvhd - unmount a VHD mounted by mountvhd. Must be sourced
+# (". umountvhd") since it needs to cd your shell out of the mounted
+# directory first -- you can't unmount a filesystem while a process
+# (your own shell) has its current directory inside it.
+
+MOUNTPOINT="/tmp/vhd_mount"
+
+cd /tmp
+
+if mount | grep -q " $MOUNTPOINT "; then
+    umount "$MOUNTPOINT"
+    echo "Unmounted $MOUNTPOINT."
+else
+    echo "Nothing mounted at $MOUNTPOINT."
+fi
+rmdir "$MOUNTPOINT" 2>/dev/null
+true

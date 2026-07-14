@@ -1,0 +1,1307 @@
+#!/bin/bash
+# mkvhd - create a blank ao486 VHD
+#
+# Usage:
+#   mkvhd <name.vhd>                            create a blank VHD
+#   mkvhd -dos <name.vhd>                        create + auto-format with DOS
+#   mkvhd -dos <name.vhd> <archive>              create + auto-format with DOS,
+#                                                then inject <archive>'s contents
+#                                                into their own folder on the VHD
+#                                                and add a CD line to AUTOEXEC.BAT
+#
+# When an archive is given, the size prompt shows a suggested VHD size
+# (archive content + DOS overhead + save-game headroom) and uses it as
+# the default if you just press Enter.
+#
+# Supported archive types: .zip, .tar, .tar.gz/.tgz, .tar.bz2/.tbz2
+
+set -e
+
+FLOPPY_SRC="/media/fat/games/ao486/floppy/DOS622/disk1.img"
+DOS_TEMPLATE="/media/fat/games/ao486/dos_template.vhd"
+WIN31_TEMPLATE="/media/fat/games/ao486/win31_template.vhd"
+BIG_SCRATCH_BASE="/media/fat/linux/.mkvhd_scratch"
+
+# mktemp -d puts staging in /tmp, which on MiSTer is RAM-backed and
+# only ~240MB total. Large game archives (Windows 3.1 titles
+# especially) can exhaust it mid-copy during staging + extraction,
+# which surfaced as mtools "No space left on device" errors and,
+# worse, silently missing files on the finished VHD (confirmed on a
+# real ~97MB archive). Any staging that can hold archive-scale data
+# uses this instead: a scratch folder on /media/fat, which has
+# hundreds of GB free. Small transient files (manifests, single
+# sectors) can and should still use plain mktemp.
+mktemp_big() {
+    mkdir -p "$BIG_SCRATCH_BASE"
+    mktemp -d "$BIG_SCRATCH_BASE/stage_XXXXXX"
+}
+HELPER_IMG="/media/fat/games/ao486/floppy/format_helper.img"
+QEMU="/media/fat/linux/qemu-system-i386"
+CONTROLLER="/media/fat/linux/newgame_controller.py"
+AUTOEXEC_SRC="/media/fat/linux/qemu_autoexec.bat"
+MBR_WRITER="/media/fat/linux/make_mbr.py"
+BPB_FIXER="/media/fat/linux/fix_bpb.py"
+MCOPY="/media/fat/linux/mcopy"
+MATTRIB="/media/fat/linux/mattrib"
+DEST_DIR="$(pwd)"
+LOOP=""
+
+cleanup() {
+    [ -n "$LOOP" ] && losetup -d "$LOOP" 2>/dev/null || true
+    [ -n "$ARCHIVE_ATTR_MANIFEST" ] && rm -f "$ARCHIVE_ATTR_MANIFEST" 2>/dev/null || true
+    # Safety net: large staging (mktemp_big) lives on /media/fat, not
+    # /tmp, so it won't auto-clear on reboot like a normal crash would
+    # clean up after itself. Sweep any leftovers on every exit path.
+    [ -d "$BIG_SCRATCH_BASE" ] && rm -rf "$BIG_SCRATCH_BASE" 2>/dev/null || true
+}
+trap cleanup EXIT
+
+# Derive a DOS 6.22-compatible 8.3 short name (no extension) from an
+# archive path: strip directory + known archive extensions, uppercase,
+# strip characters invalid in short DOS names, then truncate to the
+# classic "6 chars + ~1" form if the result is over 8 characters.
+dos_short_name() {
+    local raw="$1"
+    local base
+    base="$(basename "$raw")"
+
+    case "$base" in
+        *.[Tt][Aa][Rr].[Gg][Zz])  base="${base%.*.*}" ;;
+        *.[Tt][Gg][Zz])           base="${base%.*}" ;;
+        *.[Tt][Aa][Rr].[Bb][Zz]2) base="${base%.*.*}" ;;
+        *.[Tt][Bb][Zz]2)          base="${base%.*}" ;;
+        *.[Zz][Ii][Pp])           base="${base%.*}" ;;
+        *.[Tt][Aa][Rr])           base="${base%.*}" ;;
+        *)                        base="${base%.*}" ;;
+    esac
+
+    base="$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]')"
+    base="$(printf '%s' "$base" | tr -cd 'A-Z0-9')"
+
+    if [ -z "$base" ]; then
+        base="GAME"
+    fi
+
+    if [ "${#base}" -gt 8 ]; then
+        printf '%s~1' "${base:0:6}"
+    else
+        printf '%s' "$base"
+    fi
+}
+
+# Like dos_short_name(), but for an individual file: preserves the
+# extension separately (uppercased, max 3 chars) instead of stripping
+# it, since a chosen launch executable needs a valid NAME.EXT short
+# name, not just a bare 8-char name.
+dos_short_filename() {
+    local raw="$1"
+    local name base ext
+
+    name="$(basename "$raw")"
+    if [[ "$name" == *.* ]]; then
+        ext="${name##*.}"
+        base="${name%.*}"
+    else
+        ext=""
+        base="$name"
+    fi
+
+    base="$(printf '%s' "$base" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9')"
+    ext="$(printf '%s' "$ext" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9')"
+    ext="${ext:0:3}"
+
+    if [ -z "$base" ]; then
+        base="FILE"
+    fi
+
+    if [ "${#base}" -gt 8 ]; then
+        base="${base:0:6}~1"
+    fi
+
+    if [ -n "$ext" ]; then
+        printf '%s.%s' "$base" "$ext"
+    else
+        printf '%s' "$base"
+    fi
+}
+
+# Like dos_short_filename(), but for a single directory-name component
+# with no extension handling (a bare 8-char-max alphanumeric name).
+dos_short_dirname() {
+    local raw="$1"
+    local base
+
+    base="$(printf '%s' "$raw" | tr '[:lower:]' '[:upper:]' | tr -cd 'A-Z0-9')"
+
+    if [ -z "$base" ]; then
+        base="DIR"
+    fi
+
+    if [ "${#base}" -gt 8 ]; then
+        printf '%s~1' "${base:0:6}"
+    else
+        printf '%s' "$base"
+    fi
+}
+
+# Extract a supported archive into a destination directory.
+# losetup can transiently fail with "Resource temporarily unavailable"
+# right after a previous loop device (especially one whose backing file
+# had a partition table, triggering kernel auto partition-scan of a
+# loopNpM sub-device) is torn down -- udev's cleanup of that sub-device
+# can lag a moment behind the kernel unbinding the loop itself. Retry
+# a few times with a short pause rather than fail the whole run over a
+# transient race.
+loop_attach() {
+    local loop="$1" file="$2" offset="$3" attempt
+    for attempt in 1 2 3 4 5; do
+        if losetup -o "$offset" "$loop" "$file" 2>/dev/null; then
+            return 0
+        fi
+        sleep 1
+    done
+    # Final attempt without suppressing the error, so a genuine failure
+    # still surfaces a real message instead of failing silently.
+    losetup -o "$offset" "$loop" "$file"
+}
+
+# mtools' mcopy -s was found to silently drop files (and, worse, whole
+# subdirectories) partway through a large, real-world recursive copy
+# -- confirmed directly on a real ~70MB, 140+ file game archive: some
+# runs came back missing entire subdirectories, others reported false
+# "No space left on device" errors on a container with 90MB+ genuinely
+# free. Verified this is specific to mtools' own large-batch handling,
+# not a real capacity or mkvhd-logic problem, by copying the exact
+# same content via a kernel loop-mount + `cp -r` instead and getting a
+# byte-for-byte perfect result every time. Any copy of real, non-trivial
+# archive content (a whole game folder, not a handful of small support
+# files) goes through this helper instead of mtools for that reason.
+# Needs root (loop-mount), same as the mkfs.vfat step already does.
+loop_copy_in() {
+    local vhd="$1" offset="$2" dest_subpath="$3"
+    shift 3
+    local sources=("$@")
+    local loop mnt target status=0
+
+    loop="$(losetup -f)"
+    if ! loop_attach "$loop" "$vhd" "$offset"; then
+        echo "Error: could not attach loop device for $vhd"
+        return 1
+    fi
+
+    mnt="$(mktemp -d)"
+    if ! mount -t vfat -o rw "$loop" "$mnt" 2>/dev/null; then
+        echo "Error: could not mount $vhd for copying"
+        losetup -d "$loop" 2>/dev/null
+        rmdir "$mnt" 2>/dev/null
+        return 1
+    fi
+
+    if [ -n "$dest_subpath" ]; then
+        target="$mnt/$dest_subpath"
+        mkdir -p "$target"
+    else
+        target="$mnt"
+    fi
+
+    # Count files up front so large copies (archive injections can be
+    # 1000+ files and take a couple of minutes) show progress instead
+    # of sitting silent. Small copies (a handful of system files) stay
+    # quiet as before -- not worth the noise.
+    local total_files=0 src
+    for src in "${sources[@]}"; do
+        if [ -d "$src" ]; then
+            total_files=$(( total_files + $(find "$src" -type f 2>/dev/null | wc -l) ))
+        else
+            total_files=$(( total_files + 1 ))
+        fi
+    done
+    local show_progress=0
+    [ "$total_files" -ge 20 ] && show_progress=1
+    local baseline=0
+    [ "$show_progress" -eq 1 ] && baseline=$(find "$target" -type f 2>/dev/null | wc -l)
+
+    for src in "${sources[@]}"; do
+        if [ "$show_progress" -eq 1 ]; then
+            cp -r "$src" "$target/" &
+            local cp_pid=$!
+            while kill -0 "$cp_pid" 2>/dev/null; do
+                local now copied pct
+                now=$(find "$target" -type f 2>/dev/null | wc -l)
+                copied=$(( now - baseline ))
+                [ "$copied" -lt 0 ] && copied=0
+                pct=0
+                [ "$total_files" -gt 0 ] && pct=$(( copied * 100 / total_files ))
+                [ "$pct" -gt 100 ] && pct=100
+                printf "\r  Copying files: %d/%d (%d%%)  " "$copied" "$total_files" "$pct"
+                sleep 1
+            done
+            wait "$cp_pid"
+            if [ $? -ne 0 ]; then
+                printf "\n"
+                status=1
+                break
+            fi
+            printf "\r  Copying files: %d/%d (100%%)      \n" "$total_files" "$total_files"
+        else
+            if ! cp -r "$src" "$target/"; then
+                status=1
+                break
+            fi
+        fi
+    done
+
+    sync
+    umount "$mnt" 2>/dev/null
+    for attempt in 1 2 3 4 5; do
+        losetup -d "$loop" 2>/dev/null && break
+        sleep 1
+    done
+    rmdir "$mnt" 2>/dev/null
+    return $status
+}
+
+extract_archive() {
+    local archive="$1"
+    local dest="$2"
+    case "$archive" in
+        *.[Zz][Ii][Pp])
+            unzip -o -q "$archive" -d "$dest"
+            ;;
+        *.[Tt][Aa][Rr].[Gg][Zz]|*.[Tt][Gg][Zz])
+            tar -xzf "$archive" -C "$dest"
+            ;;
+        *.[Tt][Aa][Rr].[Bb][Zz]2|*.[Tt][Bb][Zz]2)
+            tar -xjf "$archive" -C "$dest"
+            ;;
+        *.[Tt][Aa][Rr])
+            tar -xf "$archive" -C "$dest"
+            ;;
+        *)
+            echo "Error: unsupported archive type: $archive"
+            echo "Supported: .zip, .tar, .tar.gz/.tgz, .tar.bz2/.tbz2"
+            return 1
+            ;;
+    esac
+}
+
+# Many game archives wrap their actual content in one (or more) redundant
+# top-level folders (e.g. this zip contains Dragonflight/Dragonflight/*).
+# On FAT 8.3 short names those wrapper folders collapse to the same
+# DRAGON~1-style name as the injection folder itself, producing pointless
+# nesting like DRAGON~1\DRAGON~1\DRAGON~1\*.* instead of DRAGON~1\*.*.
+# After extraction, repeatedly collapse any wrapper directory that is the
+# *sole* entry in the destination, moving its contents up a level.
+flatten_wrapper_dirs() {
+    local dest="$1"
+    local cur="$dest"
+    local i entries staging
+    # Walk down through single-subdirectory levels without moving anything
+    # yet, since intermediate wrapper names can collide with each other
+    # (e.g. Dragonflight/Dragonflight/*) and moving level-by-level in
+    # place causes "Directory not empty" errors when names repeat.
+    for i in 1 2 3 4 5; do
+        entries=("$cur"/*)
+        if [ ! -e "${entries[0]}" ]; then
+            break
+        fi
+        if [ "${#entries[@]}" -eq 1 ] && [ -d "${entries[0]}" ]; then
+            cur="${entries[0]}"
+        else
+            break
+        fi
+    done
+    if [ "$cur" != "$dest" ]; then
+        staging="$(mktemp -d)"
+        find "$cur" -mindepth 1 -maxdepth 1 -exec mv -t "$staging" {} +
+        rm -rf "$dest"
+        mv "$staging" "$dest"
+    fi
+}
+
+# Scans the TOP LEVEL (non-recursive) of the extracted game folder for
+# candidate launch executables (.exe/.bat/.com), shows the user a
+# numbered list plus a "None of the above" option (mirrors the executable
+# picker DOSBox Pure shows on a game's first boot), and lets them choose
+# one to be appended as the final line of AUTOEXEC.BAT. If the chosen
+# file's name isn't already a valid DOS 8.3 short name, it gets renamed
+# on disk so the AUTOEXEC.BAT reference actually resolves under MS-DOS
+# 6.22 (which has no long-filename support).
+#
+# All prompts/listings go to stderr; the chosen short filename (or
+# nothing) is printed to stdout so callers can capture it cleanly via
+# command substitution.
+# Resolves a single path component (file or directory) to a safe DOS
+# 8.3 short name within $2, renaming it on disk if needed. Falls back to
+# the original name only if the short name genuinely collides with a
+# DIFFERENT existing entry (as opposed to $1's own vfat-auto-generated
+# short-name alias, which is not a real collision).
+resolve_short_component() {
+    local original="$1" dir="$2" is_dir="$3"
+    local shortname
+
+    if [ "$is_dir" = "1" ]; then
+        shortname="$(dos_short_dirname "$original")"
+    else
+        shortname="$(dos_short_filename "$original")"
+    fi
+
+    if [ "$original" = "$shortname" ]; then
+        printf '%s' "$shortname"
+        return 0
+    fi
+
+    if [ -e "$dir/$shortname" ]; then
+        local orig_inode existing_inode
+        orig_inode="$(stat -c '%i' "$dir/$original" 2>/dev/null)"
+        existing_inode="$(stat -c '%i' "$dir/$shortname" 2>/dev/null)"
+        if [ -n "$orig_inode" ] && [ "$orig_inode" = "$existing_inode" ]; then
+            printf '%s' "$shortname"
+        else
+            echo "Warning: $shortname already exists under $(basename "$dir"); using $original's original name instead." >&2
+            printf '%s' "$original"
+        fi
+    else
+        mv "$dir/$original" "$dir/$shortname"
+        echo "Renamed $original -> $shortname (DOS 8.3 short name)" >&2
+        printf '%s' "$shortname"
+    fi
+}
+
+# Scans the ENTIRE extracted game folder, including subdirectories, for
+# candidate launch executables (.exe/.bat/.com), shows the user a
+# numbered list plus a "None of the above" option (mirrors the executable
+# picker DOSBox Pure shows on a game's first boot), and lets them choose
+# one. If the choice lives in a subdirectory, every path component
+# (subfolder names and the executable itself) gets resolved to a DOS 8.3
+# short name -- renaming on disk if needed, since MS-DOS 6.22 has no
+# long-filename support.
+#
+# Sets two globals for the caller: LAUNCH_EXE (the short filename, or
+# empty for "None of the above") and LAUNCH_SUBDIR (short, backslash-
+# joined subdirectory path to CD into first, or empty if the executable
+# is already at the top level).
+select_launch_executable() {
+    local gamedir="$1"
+    local -a candidates=()
+    local f i choice chosen_rel dir_part file_part none_choice
+
+    LAUNCH_EXE=""
+    LAUNCH_SUBDIR=""
+
+    while IFS= read -r f; do
+        candidates+=("$f")
+    done < <(cd "$gamedir" && find . -type f \( -iname "*.exe" -o -iname "*.bat" -o -iname "*.com" \) | sed 's#^\./##' | sort)
+
+    if [ "${#candidates[@]}" -eq 0 ]; then
+        return 0
+    fi
+
+    echo
+    echo "Select the executable to launch on startup:"
+    i=1
+    for f in "${candidates[@]}"; do
+        echo "  $i. $(printf '%s' "$f" | tr '/' '\\')"
+        i=$((i + 1))
+    done
+    none_choice=$i
+    echo "  $none_choice. None of the above"
+
+    read -p "Enter choice [${none_choice}]: " choice
+
+    if [ -z "$choice" ]; then
+        choice="$none_choice"
+    fi
+
+    if ! echo "$choice" | grep -Eq '^[0-9]+$' || [ "$choice" -lt 1 ] || [ "$choice" -gt "$none_choice" ]; then
+        echo "Invalid choice; not adding a launch executable."
+        return 0
+    fi
+
+    if [ "$choice" -eq "$none_choice" ]; then
+        return 0
+    fi
+
+    chosen_rel="${candidates[$((choice - 1))]}"
+    dir_part="$(dirname "$chosen_rel")"
+    file_part="$(basename "$chosen_rel")"
+
+    local cur="$gamedir"
+    local -a short_components=()
+
+    if [ "$dir_part" != "." ]; then
+        local IFS='/'
+        local -a parts=($dir_part)
+        unset IFS
+        local part shortpart
+        for part in "${parts[@]}"; do
+            shortpart="$(resolve_short_component "$part" "$cur" 1)"
+            short_components+=("$shortpart")
+            cur="$cur/$shortpart"
+        done
+    fi
+
+    LAUNCH_EXE="$(resolve_short_component "$file_part" "$cur" 0)"
+
+    if [ "${#short_components[@]}" -gt 0 ]; then
+        local IFS='\\'
+        LAUNCH_SUBDIR="${short_components[*]}"
+        unset IFS
+    fi
+}
+
+# Estimate the uncompressed byte size of a supported archive's contents,
+# dispatched by extension (mirrors extract_archive's case logic).
+archive_uncompressed_size() {
+    local archive="$1"
+    local bytes
+    case "$archive" in
+        *.[Zz][Ii][Pp])
+            bytes="$(unzip -l "$archive" | tail -1 | awk '{print $1}')"
+            ;;
+        *.[Tt][Aa][Rr].[Gg][Zz]|*.[Tt][Gg][Zz])
+            bytes="$(tar -tzvf "$archive" | awk '{sum+=$3} END{print sum+0}')"
+            ;;
+        *.[Tt][Aa][Rr].[Bb][Zz]2|*.[Tt][Bb][Zz]2)
+            bytes="$(tar -tjvf "$archive" | awk '{sum+=$3} END{print sum+0}')"
+            ;;
+        *.[Tt][Aa][Rr])
+            bytes="$(tar -tvf "$archive" | awk '{sum+=$3} END{print sum+0}')"
+            ;;
+        *)
+            bytes=0
+            ;;
+    esac
+    if ! echo "$bytes" | grep -Eq '^[0-9]+$'; then
+        bytes=0
+    fi
+    printf '%s' "$bytes"
+}
+
+# Dynamically measure the fixed MS-DOS 6.22 overhead every VHD pays,
+# regardless of game size: the DOS/MISTER/DRIVERS/UTIL folders (copied
+# from dos_template.vhd, measured directly so this self-corrects if those
+# folders ever change) plus a fixed allowance for the FORMAT /S system
+# files (IO.SYS, MSDOS.SYS, COMMAND.COM, DRVSPACE.BIN) that FORMAT lays
+# down directly and which aren't present as regular files inside
+# dos_template.vhd's own filesystem.
+dos_overhead_bytes() {
+    local mnt loop folder_bytes attempt mounted
+    # Sanity floor for the measured folder bytes: dos_template.vhd's
+    # DOS/MISTER/DRIVERS/UTIL folders have never been anywhere close to
+    # this small. Below it we assume the loop/mount step failed silently
+    # (e.g. a transient "Resource temporarily unavailable" on the loop
+    # device, which leaves the mount empty and du reporting a bogus 0
+    # rather than erroring) and fall back to the last-known-good value
+    # rather than trust a wildly-too-small number.
+    local FLOOR=500000
+    local FALLBACK=767857
+    folder_bytes=0
+    mnt="$(mktemp -d)"
+    for attempt in 1 2 3; do
+        mounted=0
+        loop="$(losetup -f)"
+        if losetup -o $((128 * 512)) "$loop" "$DOS_TEMPLATE" 2>/dev/null; then
+            if mount -t vfat -o ro "$loop" "$mnt" 2>/dev/null; then
+                mounted=1
+                folder_bytes="$(du -csb "$mnt/DOS" "$mnt/MISTER" "$mnt/DRIVERS" "$mnt/UTIL" 2>/dev/null | tail -1 | awk '{print $1}')"
+                umount "$mnt" 2>/dev/null
+            fi
+            losetup -d "$loop" 2>/dev/null
+        fi
+        if echo "$folder_bytes" | grep -Eq '^[0-9]+$' && [ "$folder_bytes" -ge "$FLOOR" ]; then
+            break
+        fi
+        folder_bytes=0
+        sleep 1
+    done
+    rmdir "$mnt" 2>/dev/null
+    if ! echo "$folder_bytes" | grep -Eq '^[0-9]+$' || [ "$folder_bytes" -lt "$FLOOR" ]; then
+        folder_bytes=$FALLBACK
+    fi
+    # 195,215 bytes covers the FORMAT /S system files (IO.SYS, MSDOS.SYS,
+    # COMMAND.COM, DRVSPACE.BIN) *and* the FAT tables/root directory/
+    # reserved-sector overhead that isn't visible as regular files inside
+    # dos_template.vhd. Calibrated against real df measurements: DOS-only
+    # -dos VHDs at 2/3/4/5MB all used exactly 963,072 bytes on disk
+    # (963,072 - 767,857 measured folder bytes = 195,215). This part is a
+    # fixed constant rather than dynamic, since FAT/root-dir size is a
+    # function of the eventual VHD size and would need iterative solving
+    # to compute exactly; the folder-byte portion stays dynamic so it
+    # self-corrects if those source folders change.
+    echo $(( folder_bytes + 195215 ))
+}
+
+NEWGAME=0
+if [ "$1" = "-dos" ]; then
+    NEWGAME=1
+    shift
+fi
+
+WIN31=0
+if [ "$1" = "-win31" ]; then
+    WIN31=1
+    shift
+fi
+
+if [ -z "$1" ]; then
+    echo "Usage:"
+    echo "  mkvhd <name.vhd>                  create a blank VHD"
+    echo "  mkvhd -dos <name.vhd>             create + auto-format with DOS"
+    echo "  mkvhd -dos <name.vhd> <archive>    create + auto-format, then inject"
+    echo "                                    <archive> into its own game folder"
+    echo "                                    (.zip, .tar, .tar.gz, .tar.bz2)"
+    echo "                                    Suggests a VHD size based on the"
+    echo "                                    archive; press Enter to accept it."
+    echo "  mkvhd -win31 <name.vhd>           create + install Windows 3.1"
+    echo "  mkvhd -win31 <name.vhd> <archive>  create + install Windows 3.1,"
+    echo "                                    then inject <archive> and set it"
+    echo "                                    to auto-launch when Windows starts"
+    exit 1
+fi
+
+OUTNAME="$1"
+ARCHIVE="$2"
+case "$OUTNAME" in
+    *.vhd) ;;
+    *) OUTNAME="${OUTNAME}.vhd" ;;
+esac
+
+OUTPATH="$DEST_DIR/$OUTNAME"
+
+if [ -e "$OUTPATH" ]; then
+    echo "Error: $OUTPATH already exists."
+    exit 1
+fi
+
+if [ "$WIN31" -eq 1 ]; then
+    # Windows 3.1 is handled completely differently from -dos: rather
+    # than booting real DOS via QEMU to FORMAT+XCOPY, this clones the
+    # entire win31_template.vhd (a complete, already-working DOS+
+    # Windows 3.1+ao486-driver installation with no game on it) using
+    # the same boot-code-preservation technique resizevhd uses --
+    # preserving the template's own proven boot sector rather than
+    # writing a fresh one, since real DOS boot code is tightly paired
+    # with its own system files (confirmed the hard way earlier in
+    # this project). No QEMU involved at all, so this is much faster
+    # than -dos.
+    #
+    # Sequencing deliberately mirrors -dos: the template gets copied
+    # onto the VHD first, and only afterward (if an archive was given)
+    # does the game get extracted and injected as its own separate
+    # step, with its own dedicated mcopy call -- exactly like -dos's
+    # archive injection. Originally this extracted the archive AND
+    # asked for the launch executable choice up front, before the VHD
+    # even existed, and combined the template's files and the game's
+    # files into one single large multi-item mcopy call. Both were
+    # wrong: the UX should match -dos (size prompt before creation,
+    # executable choice after), and mixing everything into one huge
+    # mcopy batch turned out to silently drop files partway through a
+    # large real archive (confirmed on a real game: subdirectories
+    # made it onto the VHD but the files directly inside one of them
+    # did not). Copying the game as mkvhd -dos already proven,
+    # isolated pattern fixes both at once.
+    if [ ! -f "$WIN31_TEMPLATE" ]; then
+        echo "Error: required file not found: $WIN31_TEMPLATE"
+        exit 1
+    fi
+    if [ ! -x "/media/fat/linux/mtools" ]; then
+        echo "Error: /media/fat/linux/mtools not found or not executable"
+        exit 1
+    fi
+    if [ ! -e "$MCOPY" ]; then
+        ln -sf mtools "$MCOPY" 2>/dev/null
+    fi
+    if [ ! -e "$MATTRIB" ]; then
+        ln -sf mtools "$MATTRIB" 2>/dev/null
+    fi
+    if [ -n "$ARCHIVE" ] && [ ! -f "$ARCHIVE" ]; then
+        echo "Error: archive not found: $ARCHIVE"
+        exit 1
+    fi
+    if [ -n "$ARCHIVE" ] && ! command -v unzip >/dev/null 2>&1; then
+        echo "Error: unzip is not installed."
+        exit 1
+    fi
+
+    WIN31_STAGE_DIR="$(mktemp_big)"
+    if ! setsid "$MCOPY" -s -i "$WIN31_TEMPLATE@@$((128 * 512))" :: "$WIN31_STAGE_DIR" < /dev/null; then
+        echo "Error: failed to read $WIN31_TEMPLATE"
+        exit 1
+    fi
+
+    WIN31_BOOT_ORIG="$(mktemp)"
+    dd if="$WIN31_TEMPLATE" bs=512 skip=128 count=1 of="$WIN31_BOOT_ORIG" 2>/dev/null
+
+    # Capture the template's own hidden/system/read-only attributes,
+    # same reason as everywhere else in this project: a Unix staging
+    # copy can't represent them, so they'd otherwise be silently lost.
+    WIN31_ATTR_MANIFEST="$(mktemp)"
+    python3 -c "
+import struct
+with open('$WIN31_TEMPLATE', 'rb') as f:
+    f.seek(128*512)
+    boot = f.read(512)
+    reserved = struct.unpack('<H', boot[14:16])[0]
+    numfats = boot[16]
+    fatsz16 = struct.unpack('<H', boot[22:24])[0]
+    root_entries = struct.unpack('<H', boot[17:19])[0]
+    root_offset_sectors = reserved + numfats * fatsz16
+    f.seek(128*512 + root_offset_sectors*512)
+    data = f.read(root_entries * 32)
+    for i in range(root_entries):
+        e = data[i*32:(i+1)*32]
+        if e[0] == 0x00:
+            break
+        if e[0] == 0xE5:
+            continue
+        attr = e[11]
+        if attr == 0x0F or (attr & 0x10):
+            continue
+        if attr & 0x07:
+            name = e[0:8].decode('ascii', errors='replace').strip()
+            ext = e[8:11].decode('ascii', errors='replace').strip()
+            fname = f'{name}.{ext}' if ext else name
+            print(f'{fname} {attr}')
+" > "$WIN31_ATTR_MANIFEST"
+
+    # Quick size estimate, matching -dos exactly: measured template
+    # content (already extracted above) plus an archive size ESTIMATE
+    # via archive_uncompressed_size() (reads archive metadata only,
+    # no extraction) -- not a full extraction just to measure, so the
+    # size prompt can appear before the archive is ever touched.
+    WIN31_TEMPLATE_BYTES="$(du -sb "$WIN31_STAGE_DIR" | awk '{print $1}')"
+    WIN31_ARCHIVE_BYTES=0
+    if [ -n "$ARCHIVE" ]; then
+        WIN31_ARCHIVE_BYTES="$(archive_uncompressed_size "$ARCHIVE")"
+    fi
+    WIN31_ACTUAL_BYTES=$(( WIN31_TEMPLATE_BYTES + WIN31_ARCHIVE_BYTES ))
+    WIN31_HEADROOM=$(( WIN31_ACTUAL_BYTES / 4 ))
+    if [ "$WIN31_HEADROOM" -lt 1048576 ]; then
+        WIN31_HEADROOM=1048576
+    fi
+    WIN31_TOTAL_BYTES=$(( WIN31_ACTUAL_BYTES + WIN31_HEADROOM ))
+    WIN31_SUGGESTED_MB=$(( (WIN31_TOTAL_BYTES + 1048575) / 1048576 ))
+    if [ "$WIN31_SUGGESTED_MB" -lt 2 ]; then
+        WIN31_SUGGESTED_MB=2
+    fi
+    if [ "$WIN31_SUGGESTED_MB" -ge 2048 ]; then
+        WIN31_SUGGESTED_MB=2047
+    fi
+
+    echo
+    if [ -n "$ARCHIVE" ]; then
+        echo "  Windows 3.1 + archive content: $(( (WIN31_ACTUAL_BYTES + 1023) / 1024 )) KB"
+    else
+        echo "  Windows 3.1 content: $(( (WIN31_ACTUAL_BYTES + 1023) / 1024 )) KB"
+    fi
+    echo "  Suggested VHD size:  ${WIN31_SUGGESTED_MB} MB"
+    echo
+    read -p "Enter VHD size in MB [${WIN31_SUGGESTED_MB}]: " SIZE_MB
+    if [ -z "$SIZE_MB" ]; then
+        SIZE_MB="$WIN31_SUGGESTED_MB"
+    fi
+    if ! echo "$SIZE_MB" | grep -Eq '^[0-9]+$'; then
+        echo "Error: size must be a whole number."
+        exit 1
+    fi
+    if [ "$SIZE_MB" -lt 2 ] || [ "$SIZE_MB" -ge 2048 ]; then
+        echo "Error: size must be between 2 and 2047 MB."
+        exit 1
+    fi
+    WIN31_NEEDED_MB=$(( (WIN31_TEMPLATE_BYTES + 1048575) / 1048576 ))
+    if [ "$SIZE_MB" -lt "$WIN31_NEEDED_MB" ]; then
+        echo "Error: ${SIZE_MB}MB is too small to hold Windows 3.1 (~${WIN31_NEEDED_MB}MB)."
+        exit 1
+    fi
+
+    echo
+    echo "Creating ${SIZE_MB}MB container..."
+    truncate -s "${SIZE_MB}M" "$OUTPATH"
+    python3 "$MBR_WRITER" "$OUTPATH" "$SIZE_MB" >/dev/null
+
+    echo "Formatting filesystem..."
+    WIN31_FORCE_FAT16=""
+    if [ "$SIZE_MB" -lt 16 ]; then
+        WIN31_CLUSTER_SECTORS=1
+    elif [ "$SIZE_MB" -le 128 ]; then
+        WIN31_CLUSTER_SECTORS=4; WIN31_FORCE_FAT16=1
+    elif [ "$SIZE_MB" -le 256 ]; then
+        WIN31_CLUSTER_SECTORS=8; WIN31_FORCE_FAT16=1
+    elif [ "$SIZE_MB" -le 512 ]; then
+        WIN31_CLUSTER_SECTORS=16; WIN31_FORCE_FAT16=1
+    elif [ "$SIZE_MB" -le 1024 ]; then
+        WIN31_CLUSTER_SECTORS=32; WIN31_FORCE_FAT16=1
+    else
+        WIN31_CLUSTER_SECTORS=64; WIN31_FORCE_FAT16=1
+    fi
+
+    LOOP=$(losetup -f)
+    loop_attach "$LOOP" "$OUTPATH" $((128 * 512))
+    if [ -n "$WIN31_FORCE_FAT16" ]; then
+        WIN31_MKFS_OUTPUT="$(mkfs.vfat -I -F 16 -s "$WIN31_CLUSTER_SECTORS" "$LOOP" 2>&1)"
+    else
+        WIN31_MKFS_OUTPUT="$(mkfs.vfat -I -s "$WIN31_CLUSTER_SECTORS" "$LOOP" 2>&1)"
+    fi
+    WIN31_MKFS_STATUS=$?
+    losetup -d "$LOOP"
+    LOOP=""
+    if [ "$WIN31_MKFS_STATUS" -ne 0 ]; then
+        echo "Error: mkfs.vfat failed:"
+        echo "$WIN31_MKFS_OUTPUT"
+        rm -f "$OUTPATH"
+        exit 1
+    fi
+
+    echo "Fixing BPB for MS-DOS compatibility..."
+    python3 "$BPB_FIXER" "$OUTPATH" "$SIZE_MB" >/dev/null
+
+    echo "Writing boot sector (preserving Windows 3.1 template's own boot code)..."
+    python3 -c "
+with open('$WIN31_BOOT_ORIG', 'rb') as f:
+    source = bytearray(f.read(512))
+with open('$OUTPATH', 'r+b') as f:
+    f.seek($((128 * 512)))
+    target = bytearray(f.read(512))
+    merged = bytearray(target)
+    merged[0:11] = source[0:11]
+    merged[62:512] = source[62:512]
+    f.seek($((128 * 512)))
+    f.write(bytes(merged))
+"
+
+    echo "Copying Windows 3.1 files..."
+    if ! loop_copy_in "$OUTPATH" $((128 * 512)) "" "$WIN31_STAGE_DIR/IO.SYS" "$WIN31_STAGE_DIR/MSDOS.SYS" "$WIN31_STAGE_DIR/COMMAND.COM"; then
+        echo "Error: failed to copy Windows 3.1 system files onto the new container."
+        rm -f "$OUTPATH"
+        exit 1
+    fi
+
+    shopt -s dotglob nullglob
+    WIN31_ALL_ITEMS=("$WIN31_STAGE_DIR"/*)
+    shopt -u dotglob nullglob
+    WIN31_REMAINING_ITEMS=()
+    for item in "${WIN31_ALL_ITEMS[@]}"; do
+        base="$(basename "$item")"
+        if [ "$base" != "IO.SYS" ] && [ "$base" != "MSDOS.SYS" ] && [ "$base" != "COMMAND.COM" ]; then
+            WIN31_REMAINING_ITEMS+=("$item")
+        fi
+    done
+    if [ "${#WIN31_REMAINING_ITEMS[@]}" -gt 0 ]; then
+        if ! loop_copy_in "$OUTPATH" $((128 * 512)) "" "${WIN31_REMAINING_ITEMS[@]}"; then
+            echo "Error: failed to copy Windows 3.1 files onto the new container."
+            rm -f "$OUTPATH"
+            exit 1
+        fi
+    fi
+
+    echo "Restoring Windows 3.1 file attributes..."
+    if [ -s "$WIN31_ATTR_MANIFEST" ]; then
+        while read -r FNAME FATTR; do
+            [ -z "$FNAME" ] && continue
+            WIN31_MATTRIB_FLAGS=()
+            [ $((FATTR & 1)) -ne 0 ] && WIN31_MATTRIB_FLAGS+=("+r")
+            [ $((FATTR & 2)) -ne 0 ] && WIN31_MATTRIB_FLAGS+=("+h")
+            [ $((FATTR & 4)) -ne 0 ] && WIN31_MATTRIB_FLAGS+=("+s")
+            if [ "${#WIN31_MATTRIB_FLAGS[@]}" -gt 0 ]; then
+                "$MATTRIB" "${WIN31_MATTRIB_FLAGS[@]}" -i "$OUTPATH@@$((128 * 512))" "::$FNAME" 2>/dev/null
+            fi
+        done < "$WIN31_ATTR_MANIFEST"
+    fi
+
+    rm -rf "$WIN31_STAGE_DIR"
+    rm -f "$WIN31_BOOT_ORIG" "$WIN31_ATTR_MANIFEST"
+
+    # Now that the VHD has DOS + Windows 3.1 fully in place, inject the
+    # game archive exactly the way -dos does: its own local staging
+    # folder, its own executable-choice prompt, and its own dedicated
+    # mcopy call, isolated from everything else that's already on the
+    # VHD.
+    WIN31_GAME_NAME=""
+    WIN31_RUN_PATH=""
+    if [ -n "$ARCHIVE" ]; then
+        WIN31_GAME_NAME="$(dos_short_name "$ARCHIVE")"
+        echo
+        echo "Injecting $ARCHIVE into \\$WIN31_GAME_NAME ..."
+
+        WIN31_GAME_STAGE_DIR="$(mktemp_big)"
+        mkdir -p "$WIN31_GAME_STAGE_DIR/$WIN31_GAME_NAME"
+        extract_archive "$ARCHIVE" "$WIN31_GAME_STAGE_DIR/$WIN31_GAME_NAME"
+        flatten_wrapper_dirs "$WIN31_GAME_STAGE_DIR/$WIN31_GAME_NAME"
+        select_launch_executable "$WIN31_GAME_STAGE_DIR/$WIN31_GAME_NAME"
+
+        WIN31_ARCHIVE_ATTR_MANIFEST=""
+        case "$ARCHIVE" in
+            *.[Zz][Ii][Pp])
+                WIN31_ARCHIVE_ATTR_MANIFEST="$(mktemp)"
+                python3 -c "
+import zipfile
+zf = zipfile.ZipFile('$ARCHIVE')
+names = zf.namelist()
+prefix_parts = []
+cur_names = names
+for _ in range(5):
+    tops = set(n.split('/')[0] for n in cur_names if n)
+    if len(tops) != 1:
+        break
+    only = next(iter(tops))
+    remainder = [n[len(only)+1:] for n in cur_names if n.startswith(only + '/') and len(n) > len(only) + 1]
+    if not remainder:
+        break
+    prefix_parts.append(only)
+    cur_names = remainder
+prefix = '/'.join(prefix_parts)
+for info in zf.infolist():
+    if info.is_dir():
+        continue
+    if info.create_system != 0:
+        # Non-MS-DOS-origin zip (e.g. zipped on Unix/macOS/Windows
+        # tooling): the upper 16 bits of external_attr hold that
+        # system's own file-mode bits (e.g. Unix rwxrwxrwx), not a
+        # DOS attribute byte. Reinterpreting those bits as DOS
+        # attributes produces garbage -- confirmed in practice: a
+        # Unix-made zip's ordinary rw-rw-rw- files came out tagged
+        # Hidden+System, making every injected file invisible in
+        # Windows' own File Manager. Only trust this field when the
+        # zip actually came from an MS-DOS/FAT host.
+        continue
+    attr = (info.external_attr >> 16) & 0xFF
+    if attr & 0x07:
+        rel = info.filename
+        if prefix and rel.startswith(prefix + '/'):
+            rel = rel[len(prefix)+1:]
+        print(f'{rel} {attr}')
+" > "$WIN31_ARCHIVE_ATTR_MANIFEST" 2>/dev/null
+                ;;
+        esac
+
+        if ! loop_copy_in "$OUTPATH" $((128 * 512)) "$WIN31_GAME_NAME" "$WIN31_GAME_STAGE_DIR/$WIN31_GAME_NAME/."; then
+            echo "Error: failed to copy $ARCHIVE onto the VHD."
+            [ -n "$WIN31_ARCHIVE_ATTR_MANIFEST" ] && rm -f "$WIN31_ARCHIVE_ATTR_MANIFEST"
+            rm -rf "$WIN31_GAME_STAGE_DIR"
+            rm -f "$OUTPATH"
+            exit 1
+        fi
+
+        if [ -n "$WIN31_ARCHIVE_ATTR_MANIFEST" ] && [ -s "$WIN31_ARCHIVE_ATTR_MANIFEST" ]; then
+            while read -r FNAME FATTR; do
+                [ -z "$FNAME" ] && continue
+                WIN31_MATTRIB_FLAGS=()
+                [ $((FATTR & 1)) -ne 0 ] && WIN31_MATTRIB_FLAGS+=("+r")
+                [ $((FATTR & 2)) -ne 0 ] && WIN31_MATTRIB_FLAGS+=("+h")
+                [ $((FATTR & 4)) -ne 0 ] && WIN31_MATTRIB_FLAGS+=("+s")
+                if [ "${#WIN31_MATTRIB_FLAGS[@]}" -gt 0 ]; then
+                    "$MATTRIB" "${WIN31_MATTRIB_FLAGS[@]}" -i "$OUTPATH@@$((128 * 512))" "::$WIN31_GAME_NAME/$FNAME" 2>/dev/null
+                fi
+            done < "$WIN31_ARCHIVE_ATTR_MANIFEST"
+        fi
+        [ -n "$WIN31_ARCHIVE_ATTR_MANIFEST" ] && rm -f "$WIN31_ARCHIVE_ATTR_MANIFEST"
+        rm -rf "$WIN31_GAME_STAGE_DIR"
+
+        echo "Game files extracted to \\$WIN31_GAME_NAME"
+
+        if [ -n "$LAUNCH_EXE" ]; then
+            echo "Setting $LAUNCH_EXE to auto-launch when Windows starts..."
+            WIN31_RUN_PATH="C:\\\\$WIN31_GAME_NAME"
+            if [ -n "$LAUNCH_SUBDIR" ]; then
+                WIN31_RUN_PATH="$WIN31_RUN_PATH\\\\$LAUNCH_SUBDIR"
+            fi
+            WIN31_RUN_PATH="$WIN31_RUN_PATH\\\\$LAUNCH_EXE"
+
+            WIN31_WININI_TMP="$(mktemp)"
+            setsid "$MCOPY" -n -i "$OUTPATH@@$((128 * 512))" ::WINDOWS/WIN.INI "$WIN31_WININI_TMP" < /dev/null
+            python3 -c "
+with open('$WIN31_WININI_TMP', 'rb') as f:
+    content = f.read()
+old = b'run=\r\n'
+new = b'run=$WIN31_RUN_PATH\r\n'
+if content.count(old) == 1:
+    content = content.replace(old, new, 1)
+    with open('$WIN31_WININI_TMP', 'wb') as f:
+        f.write(content)
+else:
+    print('Warning: could not find an empty run= line in WIN.INI to update.')
+"
+            setsid "$MCOPY" -D o -D O -i "$OUTPATH@@$((128 * 512))" "$WIN31_WININI_TMP" ::WINDOWS/WIN.INI < /dev/null
+            rm -f "$WIN31_WININI_TMP"
+        fi
+
+        echo
+        echo "Source archive that can now be removed:"
+        echo "  $ARCHIVE"
+        read -p "Delete the original source archive? [y/N]: " answer
+        if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+            rm -f "$ARCHIVE"
+            echo "Deleted."
+        else
+            echo "Keeping source archive."
+        fi
+    fi
+
+    echo
+    echo "======================================================="
+    echo " Done! Windows 3.1 VHD ready: $OUTPATH"
+    if [ -n "$ARCHIVE" ]; then
+        echo " Game installed to: \\$WIN31_GAME_NAME"
+        if [ -n "$LAUNCH_EXE" ]; then
+            echo " Will auto-launch: $(printf '%s' "$WIN31_RUN_PATH" | tr -s '\\')"
+        fi
+    fi
+    echo "======================================================="
+    exit 0
+fi
+
+if [ -n "$ARCHIVE" ]; then
+    if [ "$NEWGAME" -eq 0 ]; then
+        echo "Error: an archive argument requires -dos."
+        exit 1
+    fi
+    if [ ! -f "$ARCHIVE" ]; then
+        echo "Error: archive not found: $ARCHIVE"
+        exit 1
+    fi
+fi
+
+SUGGESTED_MB=""
+if [ -n "$ARCHIVE" ]; then
+    echo "Calculating suggested VHD size..."
+    ARCHIVE_BYTES="$(archive_uncompressed_size "$ARCHIVE")"
+    DOS_BYTES="$(dos_overhead_bytes)"
+    # Headroom for save games: 25% of the archive's own size, with a
+    # flat 100KB minimum so tiny archives still get a little breathing
+    # room (and larger archives scale proportionally, since bigger
+    # games tend to have bigger save files).
+    HEADROOM=$(( ARCHIVE_BYTES / 4 ))
+    if [ "$HEADROOM" -lt 102400 ]; then
+        HEADROOM=102400
+    fi
+    TOTAL_BYTES=$(( ARCHIVE_BYTES + DOS_BYTES + HEADROOM ))
+    SUGGESTED_MB=$(( (TOTAL_BYTES + 1048575) / 1048576 ))
+    echo "  Archive content: $(( (ARCHIVE_BYTES + 1023) / 1024 )) KB"
+    echo "  Suggested size:  ${SUGGESTED_MB} MB"
+    echo
+fi
+
+if [ -n "$SUGGESTED_MB" ]; then
+    read -p "Enter VHD size in MB: " SIZE_MB
+    if [ -z "$SIZE_MB" ]; then
+        SIZE_MB="$SUGGESTED_MB"
+    fi
+else
+    read -p "Enter VHD size in MB: " SIZE_MB
+fi
+
+if ! echo "$SIZE_MB" | grep -Eq '^[0-9]+$'; then
+    echo "Error: size must be a whole number."
+    exit 1
+fi
+
+# MS-DOS 6.22 needs ~970KB just for its own system files (IO.SYS,
+# MSDOS.SYS, COMMAND.COM, DOS/MISTER/DRIVERS/UTIL folders), plus
+# filesystem overhead. Below that nothing fits, period.
+if [ "$NEWGAME" -eq 1 ] && [ "$SIZE_MB" -lt 2 ]; then
+    echo "Error: ${SIZE_MB}MB is too small for -dos (auto-DOS-setup)."
+    echo "MS-DOS's own system files need ~1MB by themselves; there's no"
+    echo "room left for any game data below ~2MB. Use at least 2MB, or"
+    echo "drop -dos to create a blank VHD of any size and format it yourself."
+    exit 1
+fi
+
+# Real MS-DOS FAT16 has a hard ~2GB ceiling: even with the largest
+# standard cluster size (32KB / 64 sectors), a 2048MB partition needs
+# more clusters than FAT16's 16-bit cluster count can address. Verified
+# empirically: 2047MB formats fine at -s 64, 2048MB fails outright
+# ("Too many clusters") even at that same cluster size. This applies
+# regardless of -dos.
+if [ "$SIZE_MB" -ge 2048 ]; then
+    echo "Error: ${SIZE_MB}MB exceeds the real MS-DOS FAT16 limit."
+    echo "FAT16 tops out at 2047MB even with the largest standard"
+    echo "(32KB) cluster size; MS-DOS 6.22 cannot read FAT32. Use at"
+    echo "most 2047MB, or split the game across multiple VHDs."
+    exit 1
+fi
+
+echo
+echo "Creating blank ${SIZE_MB}MB VHD..."
+truncate -s "${SIZE_MB}M" "$OUTPATH"
+
+if [ "$NEWGAME" -eq 0 ]; then
+    echo
+    echo "Done. Blank VHD: $OUTPATH"
+    exit 0
+fi
+
+# Check requirements
+for f in "$FLOPPY_SRC" "$DOS_TEMPLATE" "$QEMU" "$CONTROLLER" "$AUTOEXEC_SRC" "$MBR_WRITER" "$BPB_FIXER"; do
+    if [ ! -f "$f" ]; then
+        echo "Error: required file not found: $f"
+        exit 1
+    fi
+done
+
+if [ ! -d "/media/fat/linux/qemu-bios" ]; then
+    echo "Error: /media/fat/linux/qemu-bios not found"
+    exit 1
+fi
+
+if [ ! -x "/media/fat/linux/mtools" ]; then
+    echo "Error: /media/fat/linux/mtools not found or not executable"
+    exit 1
+fi
+# mtools dispatches its sub-commands based on how it's invoked (its own
+# filename), not via a first argument -- so mcopy has to exist as an
+# actual symlink to the mtools binary, not just be called directly.
+# Created automatically here so dropping in the mtools binary alone is
+# enough; no manual setup step required.
+if [ ! -e "$MCOPY" ]; then
+    ln -sf mtools "$MCOPY" 2>/dev/null
+fi
+if [ ! -e "$MATTRIB" ]; then
+    ln -sf mtools "$MATTRIB" 2>/dev/null
+fi
+
+if [ -n "$ARCHIVE" ] && ! command -v unzip >/dev/null 2>&1; then
+    echo "Error: unzip is not installed."
+    exit 1
+fi
+
+# Write proper MBR + partition table
+echo "Writing partition table..."
+python3 "$MBR_WRITER" "$OUTPATH" "$SIZE_MB"
+
+# Format with mkfs.vfat
+echo "Formatting filesystem..."
+# Cluster size: smaller clusters waste less space to internal
+# fragmentation on tiny volumes (important for small game folders full
+# of small files); larger volumes need progressively larger clusters to
+# keep the cluster count under FAT16's 65,524 ceiling.
+#
+# Below 16MB we deliberately do NOT force a FAT bit-width (-F): FAT12 vs
+# FAT16 is decided by mkfs.vfat purely from the resulting cluster count,
+# and letting it choose naturally keeps the on-disk structure and DOS's
+# own classification of it always in agreement. Forcing -F 16 on a
+# volume whose cluster count falls under the FAT16 minimum (4085
+# clusters) is what caused 'General failure reading drive C' on small
+# VHDs before.
+#
+# At 16MB and above we DO force -F 16 explicitly. Without it,
+# mkfs.vfat's own default heuristic silently switches to FAT32 well
+# before our largest supported size (confirmed at 560MB) regardless of
+# the cluster size we ask for -- and MS-DOS 6.22 cannot read FAT32 at
+# all. The bracket sizes and cluster sizes below were each verified
+# empirically (both the largest size that works at the smaller cluster
+# size, and the smallest size that works at the next one up):
+#   16-128MB:    4 sectors/cluster (2KB)
+#   128-256MB:   8 sectors/cluster (4KB)
+#   256-512MB:   16 sectors/cluster (8KB)
+#   512-1024MB:  32 sectors/cluster (16KB)
+#   1024-2047MB: 64 sectors/cluster (32KB, the real DOS FAT16 max)
+FORCE_FAT16=""
+if [ "$SIZE_MB" -lt 16 ]; then
+    CLUSTER_SECTORS=1
+elif [ "$SIZE_MB" -le 128 ]; then
+    CLUSTER_SECTORS=4
+    FORCE_FAT16="1"
+elif [ "$SIZE_MB" -le 256 ]; then
+    CLUSTER_SECTORS=8
+    FORCE_FAT16="1"
+elif [ "$SIZE_MB" -le 512 ]; then
+    CLUSTER_SECTORS=16
+    FORCE_FAT16="1"
+elif [ "$SIZE_MB" -le 1024 ]; then
+    CLUSTER_SECTORS=32
+    FORCE_FAT16="1"
+else
+    CLUSTER_SECTORS=64
+    FORCE_FAT16="1"
+fi
+
+LOOP=$(losetup -f)
+loop_attach "$LOOP" "$OUTPATH" $((128 * 512))
+if [ -n "$FORCE_FAT16" ]; then
+    MKFS_OUTPUT="$(mkfs.vfat -I -F 16 -s "$CLUSTER_SECTORS" "$LOOP" 2>&1)"
+else
+    MKFS_OUTPUT="$(mkfs.vfat -I -s "$CLUSTER_SECTORS" "$LOOP" 2>&1)"
+fi
+MKFS_STATUS=$?
+losetup -d "$LOOP"
+LOOP=""
+
+if [ "$MKFS_STATUS" -ne 0 ]; then
+    echo "Error: mkfs.vfat failed to format ${SIZE_MB}MB VHD:"
+    echo "$MKFS_OUTPUT"
+    rm -f "$OUTPATH"
+    exit 1
+fi
+
+# Fix BPB for MS-DOS 6.22 compatibility
+echo "Fixing BPB for MS-DOS compatibility..."
+python3 "$BPB_FIXER" "$OUTPATH" "$SIZE_MB"
+
+# Prepare helper floppy
+# Written onto the floppy image via mtools (mcopy) rather than a loop
+# device + kernel mount, so no root privileges are needed for this
+# step at all. (Floppy images have no partition table, so mcopy
+# addresses them directly with no offset needed.)
+echo "Preparing automation floppy..."
+cp "$FLOPPY_SRC" "$HELPER_IMG"
+"$MCOPY" -D o -D O -i "$HELPER_IMG" "$AUTOEXEC_SRC" ::AUTOEXEC.BAT
+CONFIG_TMP="$(mktemp)"
+printf "FILES=30\r\nBUFFERS=20\r\nLASTDRIVE=Z\r\n" > "$CONFIG_TMP"
+"$MCOPY" -D o -D O -i "$HELPER_IMG" "$CONFIG_TMP" ::CONFIG.SYS
+rm -f "$CONFIG_TMP"
+
+# Run QEMU
+echo
+echo "Running QEMU to format and populate VHD..."
+echo "This will take 1-2 minutes..."
+echo
+
+if python3 "$CONTROLLER" "$OUTPATH" "$HELPER_IMG" "$DOS_TEMPLATE"; then
+    echo
+    echo "======================================================="
+    echo " Done! VHD ready: $OUTPATH"
+    echo "======================================================="
+
+    if [ -n "$ARCHIVE" ]; then
+        GAME_NAME="$(dos_short_name "$ARCHIVE")"
+        echo
+        echo "Injecting $ARCHIVE into \\$GAME_NAME ..."
+
+        # Everything is prepared in a normal local staging directory
+        # first -- extract_archive/flatten_wrapper_dirs/
+        # select_launch_executable are all completely unchanged, since
+        # they just operate on regular files/directories either way.
+        # Only the final "install this onto the VHD" step below uses
+        # mtools instead of a loop device + kernel mount, so none of
+        # that delicate short-name/wrapper-flattening/executable-
+        # picker logic needed to change at all.
+        STAGE_DIR="$(mktemp_big)"
+        mkdir -p "$STAGE_DIR/$GAME_NAME"
+        extract_archive "$ARCHIVE" "$STAGE_DIR/$GAME_NAME"
+        flatten_wrapper_dirs "$STAGE_DIR/$GAME_NAME"
+        select_launch_executable "$STAGE_DIR/$GAME_NAME"
+
+        # A .zip can store DOS hidden/system/read-only attributes in
+        # each entry's own metadata (real feature of the zip format,
+        # used by some older/copy-protected DOS games) -- but `unzip`
+        # doesn't restore them to anything meaningful on a Unix
+        # filesystem (confirmed: it maps them into odd, unrecoverable
+        # Unix permission bits instead). Capture them straight from
+        # the zip's own metadata before extraction touches anything,
+        # so they can be faithfully restored after the copy -- same
+        # fix as the one that turned out to be necessary in
+        # resizevhd, applied here since the archive-injection path
+        # uses the same "extract to local staging, then mtools copy"
+        # pattern. Only applies to .zip; .tar has no DOS-attribute
+        # concept to lose in the first place.
+        ARCHIVE_ATTR_MANIFEST=""
+        case "$ARCHIVE" in
+            *.[Zz][Ii][Pp])
+                ARCHIVE_ATTR_MANIFEST="$(mktemp)"
+                python3 -c "
+import zipfile, posixpath
+zf = zipfile.ZipFile('$ARCHIVE')
+names = zf.namelist()
+# Replicate flatten_wrapper_dirs' own wrapper-collapsing logic against
+# the zip's own directory structure, so captured paths line up with
+# wherever files actually end up after flattening.
+prefix_parts = []
+cur_names = names
+for _ in range(5):
+    tops = set(n.split('/')[0] for n in cur_names if n)
+    if len(tops) != 1:
+        break
+    only = next(iter(tops))
+    remainder = [n[len(only)+1:] for n in cur_names if n.startswith(only + '/') and len(n) > len(only) + 1]
+    if not remainder:
+        break
+    prefix_parts.append(only)
+    cur_names = remainder
+prefix = '/'.join(prefix_parts)
+for info in zf.infolist():
+    if info.is_dir():
+        continue
+    if info.create_system != 0:
+        # Non-MS-DOS-origin zip (e.g. zipped on Unix/macOS/Windows
+        # tooling): the upper 16 bits of external_attr hold that
+        # system's own file-mode bits (e.g. Unix rwxrwxrwx), not a
+        # DOS attribute byte. Reinterpreting those bits as DOS
+        # attributes produces garbage -- confirmed in practice: a
+        # Unix-made zip's ordinary rw-rw-rw- files came out tagged
+        # Hidden+System, making every injected file invisible in
+        # Windows' own File Manager. Only trust this field when the
+        # zip actually came from an MS-DOS/FAT host.
+        continue
+    attr = (info.external_attr >> 16) & 0xFF
+    if attr & 0x07:
+        rel = info.filename
+        if prefix and rel.startswith(prefix + '/'):
+            rel = rel[len(prefix)+1:]
+        print(f'{rel} {attr}')
+" > "$ARCHIVE_ATTR_MANIFEST" 2>/dev/null
+                ;;
+        esac
+
+        # See loop_copy_in's own comment: mtools was found to silently
+        # drop files/subdirectories on large, real archives, so this
+        # goes through the kernel's own loop-mount + cp instead.
+        if ! loop_copy_in "$OUTPATH" $((128 * 512)) "$GAME_NAME" "$STAGE_DIR/$GAME_NAME/."; then
+            echo "Error: failed to copy $ARCHIVE onto the VHD."
+            [ -n "$ARCHIVE_ATTR_MANIFEST" ] && rm -f "$ARCHIVE_ATTR_MANIFEST"
+            exit 1
+        fi
+
+        if [ -n "$ARCHIVE_ATTR_MANIFEST" ] && [ -s "$ARCHIVE_ATTR_MANIFEST" ]; then
+            while read -r FNAME FATTR; do
+                [ -z "$FNAME" ] && continue
+                MATTRIB_FLAGS=()
+                [ $((FATTR & 1)) -ne 0 ] && MATTRIB_FLAGS+=("+r")
+                [ $((FATTR & 2)) -ne 0 ] && MATTRIB_FLAGS+=("+h")
+                [ $((FATTR & 4)) -ne 0 ] && MATTRIB_FLAGS+=("+s")
+                if [ "${#MATTRIB_FLAGS[@]}" -gt 0 ]; then
+                    "$MATTRIB" "${MATTRIB_FLAGS[@]}" -i "$OUTPATH@@$((128 * 512))" "::$GAME_NAME/$FNAME" 2>/dev/null
+                fi
+            done < "$ARCHIVE_ATTR_MANIFEST"
+        fi
+        [ -n "$ARCHIVE_ATTR_MANIFEST" ] && rm -f "$ARCHIVE_ATTR_MANIFEST"
+
+        AUTOEXEC_TMP="$(mktemp)"
+        "$MCOPY" -n -i "$OUTPATH@@$((128 * 512))" ::AUTOEXEC.BAT "$AUTOEXEC_TMP"
+        printf 'CD %s\r\n' "$GAME_NAME" >> "$AUTOEXEC_TMP"
+        if [ -n "$LAUNCH_SUBDIR" ]; then
+            printf 'CD %s\r\n' "$LAUNCH_SUBDIR" >> "$AUTOEXEC_TMP"
+        fi
+        if [ -n "$LAUNCH_EXE" ]; then
+            printf '%s\r\n' "$LAUNCH_EXE" >> "$AUTOEXEC_TMP"
+        fi
+        "$MCOPY" -D o -D O -i "$OUTPATH@@$((128 * 512))" "$AUTOEXEC_TMP" ::AUTOEXEC.BAT
+
+        rm -rf "$STAGE_DIR" "$AUTOEXEC_TMP"
+        echo "Game files extracted to \\$GAME_NAME"
+        echo "AUTOEXEC.BAT updated with: CD $GAME_NAME"
+        if [ -n "$LAUNCH_SUBDIR" ]; then
+            echo "                           CD $LAUNCH_SUBDIR"
+        fi
+        if [ -n "$LAUNCH_EXE" ]; then
+            echo "                           $LAUNCH_EXE"
+        fi
+
+        echo
+        echo "Source archive that can now be removed:"
+        echo "  $ARCHIVE"
+        read -p "Delete the original source archive? [y/N]: " answer
+        if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+            rm -f "$ARCHIVE"
+            echo "Deleted."
+        else
+            echo "Keeping source archive."
+        fi
+    fi
+
+    echo "======================================================="
+    echo " Mount: . mountvhd $OUTPATH"
+    echo "======================================================="
+else
+    echo "[!] Setup may have failed. Try: . mountvhd $OUTPATH"
+fi

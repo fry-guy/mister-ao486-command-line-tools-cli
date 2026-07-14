@@ -1,0 +1,94 @@
+#!/bin/bash
+# mkchd - wrapper for chdman to create CHD files from CD images
+# Usage: mkchd <input.iso|.cue|.gdi|.toc> <output.chd>
+
+CHDMAN="/media/fat/linux/chdman"
+
+if [ -z "$1" ] || [ -z "$2" ]; then
+    echo "Usage: mkchd <input.iso|.cue|.bin|.gdi> <output.chd>"
+    exit 1
+fi
+if [ ! -f "$1" ]; then
+    echo "Error: input file not found: $1"
+    exit 1
+fi
+if [ ! -x "$CHDMAN" ]; then
+    echo "Error: chdman not found or not executable at $CHDMAN"
+    exit 1
+fi
+
+# An earlier build of chdman had a codec that crashed on ARM (traced to
+# a stale mismatched object file from an interrupted build, not a real
+# LZMA bug -- confirmed fixed via a clean rebuild and verified on real
+# hardware). All codecs (cdlz/LZMA, cdzl/Deflate, cdfl/FLAC) are safe
+# to use now, so this just uses chdman's own default codec selection.
+"$CHDMAN" createcd -i "$1" -o "$2" -f
+STATUS=$?
+
+if [ "$STATUS" -ne 0 ]; then
+    # A process killed by a signal reports exit code 128+signal. 135 =
+    # 128+7 (SIGBUS) would mean a genuine crash; kept as a safety net
+    # in case anything unexpected ever happens (bad input file, out of
+    # disk space triggering a weird failure mode, etc.).
+    if [ "$STATUS" -eq 135 ]; then
+        echo "Error: chdman crashed (Bus error / SIGBUS) while creating $2."
+        echo "This shouldn't happen; please don't just retry blindly --"
+        echo "worth checking the input file and available disk space."
+    else
+        echo "Error: chdman failed (exit code $STATUS) while creating $2."
+    fi
+    if [ -f "$2" ]; then
+        rm -f "$2"
+        echo "Removed incomplete/corrupt output file: $2"
+    fi
+    exit 1
+fi
+
+echo "Done: $2"
+
+# Offer to clean up the original source file(s). For .cue/.gdi/.toc,
+# these are text descriptors that can reference one or more separate
+# data files (e.g. a .cue pointing at a .bin) -- deleting just the
+# descriptor and leaving orphaned multi-hundred-MB .bin files behind
+# would defeat the point of a cleanup prompt, so this scans the
+# descriptor's own content for every file it references.
+SRC_DIR="$(dirname "$1")"
+SRC_BASE="$(basename "$1")"
+OUT_ABS="$(realpath "$2" 2>/dev/null)"
+
+declare -a TO_DELETE=("$1")
+case "$SRC_BASE" in
+    *.[Cc][Uu][Ee]|*.[Gg][Dd][Ii]|*.[Tt][Oo][Cc])
+        while IFS= read -r ref; do
+            ref_path="$SRC_DIR/$ref"
+            if [ -f "$ref_path" ]; then
+                ref_abs="$(realpath "$ref_path" 2>/dev/null)"
+                if [ "$ref_abs" != "$OUT_ABS" ]; then
+                    already=0
+                    for existing in "${TO_DELETE[@]}"; do
+                        if [ "$(realpath "$existing" 2>/dev/null)" = "$ref_abs" ]; then
+                            already=1
+                            break
+                        fi
+                    done
+                    [ "$already" -eq 0 ] && TO_DELETE+=("$ref_path")
+                fi
+            fi
+        done < <(grep -oE '"[^"]+"' "$1" 2>/dev/null | tr -d '"'; grep -oE '[A-Za-z0-9_.-]+\.(bin|raw|iso)' "$1" 2>/dev/null)
+        ;;
+esac
+
+echo
+echo "Source file(s) that can now be removed:"
+for f in "${TO_DELETE[@]}"; do
+    echo "  $f"
+done
+read -p "Delete these original source file(s)? [y/N]: " answer
+if [ "$answer" = "y" ] || [ "$answer" = "Y" ]; then
+    for f in "${TO_DELETE[@]}"; do
+        rm -f "$f"
+    done
+    echo "Deleted."
+else
+    echo "Keeping source file(s)."
+fi

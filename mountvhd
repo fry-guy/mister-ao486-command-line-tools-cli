@@ -1,0 +1,14 @@
+#!/bin/bash
+# Uses a fixed path under /tmp (tmpfs, always writable) rather than
+# /mnt, since /mnt lives on the root filesystem, which MiSTer
+# sometimes mounts read-only (e.g. after an unclean shutdown pending
+# fsck) -- unlike /media/fat, root isn't something this toolchain
+# should ever depend on being writable.
+VHD="$1"
+MOUNTPOINT="/tmp/vhd_mount"
+OFFSET=$(fdisk -l "$VHD" | awk '/^Device/{found=1; next} found{for(i=1;i<=NF;i++) if($i~/^[0-9]+$/ && $i>1){print $i; exit}}')
+mkdir -p "$MOUNTPOINT"
+mount -o loop,offset=$((OFFSET * 512)) "$VHD" "$MOUNTPOINT"
+echo "Mounted $VHD at $MOUNTPOINT (offset=$((OFFSET * 512)))"
+echo "Run '. umountvhd' when done to unmount and clean up."
+cd "$MOUNTPOINT"
