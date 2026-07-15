@@ -23,13 +23,18 @@
 //	aotools uninstall
 //	aotools shellinit
 //
-// `mount`/`umount` are meant to be driven through the mountvhd/
-// umountvhd/mountchd/umountchd shell functions, which handle the
-// actual `cd` into/out of the mountpoint (a subprocess can never
-// change its parent shell's own working directory). Those functions
-// are embedded in this binary itself (see shellinit.go) -- there is
-// no separate .sh file to install. Run `aotools install` once and
-// it wires them into every future shell automatically.
+// `mount`/`umount` cd you into/out of the mounted volume automatically
+// -- but only once `aotools install` (or `eval "$(aotools shellinit)"`)
+// has loaded aotools's shell integration into your session. That
+// integration makes `aotools` itself a shell function (plus the
+// legacy mountvhd/umountvhd/mountchd/umountchd/mkvhd/... shortcuts),
+// so `aotools mount vhd x.vhd` and `mountvhd x.vhd` are exactly the
+// same thing under the hood. All of this is embedded in this binary
+// itself (see shellinit.go) -- there is no separate .sh file to
+// install. If you run this binary directly by its full path with no
+// shell integration loaded, mount/umount still work but can't cd you
+// anywhere (a subprocess can never change its parent shell's own
+// working directory -- that's a hard OS limitation).
 package main
 
 import (
@@ -144,9 +149,12 @@ Usage:
   aotools shellinit
   aotools doctor
 
-mount/umount are normally driven through the mountvhd/umountvhd/
-mountchd/umountchd shell functions (embedded in this binary -- run
-'aotools install' once to wire them into every shell automatically,
-or 'eval "$(aotools shellinit)"' to load them into just this one)
-so your shell actually cd's into the mounted volume.`)
+Once 'aotools install' has run (or you've loaded shell integration
+with 'eval "$(aotools shellinit)"'), 'aotools mount vhd'/'aotools
+umount vhd'/'aotools mount chd'/'aotools umount chd' automatically cd
+you into and back out of the mounted volume -- 'aotools' itself
+becomes a shell function that does this, so there's no separate
+syntax to remember. The legacy mountvhd/umountvhd/mountchd/umountchd/
+mkvhd/... shortcuts (embedded in this binary, no separate file) do
+the exact same thing and share the same state.`)
 }
