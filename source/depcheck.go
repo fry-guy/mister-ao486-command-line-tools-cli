@@ -50,7 +50,13 @@ var fixedPathDeps = []depCheck{
 // fixed aotools-specific location. There's no sensible single-file
 // download for any of these (they're base OS / busybox-level
 // tools), so they're never offered as auto-fetchable.
-var pathDeps = []string{"mkfs.vfat", "mount", "losetup"}
+//
+// unix2dos is what the `nano` shell-function wrapper (see
+// shellinit.go) uses to convert files edited inside a mounted VHD/CHD
+// to DOS line endings automatically -- it ships as part of the base
+// MiSTer Linux image, but is checked here too in case some other
+// MiSTer setup is missing it.
+var pathDeps = []string{"mkfs.vfat", "mount", "losetup", "unix2dos"}
 
 // checkDependencies reports on every external tool/data file aotools
 // depends on but doesn't (and, for licensing and size reasons,
