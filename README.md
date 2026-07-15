@@ -1,6 +1,6 @@
 # aotools — MiSTer ao486 DOS Toolkit, single-binary edition
 
-`aotools` is a single-file replacement for the ao486 DOS Toolkit scripts (`mkvhd`, `resizevhd`, `mkmgl`, `mkchd`, `mkima`, `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the Python helpers behind them). One executable performs everything those separate scripts did, with no Python and no compiler required to run it.
+`aotools` is a set of command line tools for building, converting, and lanching DOS and Windows 3.1 games on MiSTer's ao486 core.
 
 This file covers installation and command usage. For build and development notes, see `INSTALL.md`.
 
