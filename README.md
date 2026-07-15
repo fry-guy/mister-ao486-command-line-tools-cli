@@ -31,9 +31,9 @@ Only steps 1–2 touch the filesystem outside `user-startup.sh` and `/etc/profil
 
 ### External dependencies
 
-`aotools` still relies on the same external programs and data files the original scripts required. None are bundled: `qemu-system-i386`, `chdman`, and `mtools` are separately licensed programs; the VHD templates and boot floppy contain copyrighted Microsoft system files that cannot be redistributed.
+Several key functionalities of `aotools` require external programs and data files. None are bundled: `qemu-system-i386`, `chdman`, and `mtools` are separately licensed programs; the VHD templates and boot floppy contain copyrighted Microsoft system files that cannot be redistributed.
 
-`aotools install` can download all of them from known community-hosted sources, the same way installers such as `update_all.sh` handle content they cannot bundle themselves. It asks first, then requires pressing Enter to proceed or Esc to cancel before downloading anything.
+`aotools install` can instead download all of them from known community-hosted sources, the same way installers such as `update_all.sh` handle content they cannot bundle themselves. It asks first, then requires pressing Enter to proceed or Esc to cancel before downloading.
 
 | File | Used by | Location | Source |
 |---|---|---|---|
