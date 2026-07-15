@@ -19,17 +19,23 @@ A single-binary Go port of the ao486 DOS Toolkit (`mkvhd`, `resizevhd`, `mkmgl`,
 /media/fat/linux/aotools/aotools install
 ```
 
-This appends a single line to `/media/fat/linux/user-startup.sh` (MiSTer's own boot hook):
+This appends a small marker-delimited block to `/media/fat/linux/user-startup.sh` (MiSTer's own boot hook):
 
 ```
+# --- aotools:begin (shell functions + PATH) ---
+export PATH="$PATH:/media/fat/linux/aotools"
 eval "$(/media/fat/linux/aotools/aotools shellinit)"
+# --- aotools:end ---
 ```
 
-It's idempotent (checks for that line first, so running `install` again is a no-op) and only ever appends — it never rewrites or touches anything else already in `user-startup.sh`. From your next reboot (or next new SSH session) onward, `mountvhd`/`umountvhd`/`mountchd`/`umountchd`/`mkvhd`/`resizevhd`/`mkmgl`/`mkchd`/`mkima` are just available, no period, no sourcing, nothing else to remember.
+It's idempotent (checks for the begin marker first, so running `install` again is a no-op) and only ever appends — it never rewrites or touches anything else already in `user-startup.sh`. From your next reboot (or next new SSH session) onward, `aotools` itself is on `$PATH` (so `aotools <command>` works from any directory) and `mountvhd`/`umountvhd`/`mountchd`/`umountchd`/`mkvhd`/`resizevhd`/`mkmgl`/`mkchd`/`mkima` are just available, no period, no sourcing, nothing else to remember.
 
-To get them in your *current* shell right now without rebooting:
+If a machine already has an older install (shell functions only, no PATH export — the original single-line-marker format), running `install` again detects that automatically, strips the old block, and replaces it with the current begin/end block above — it upgrades in place rather than leaving two blocks or silently skipping the PATH addition.
+
+To get both in your *current* shell right now without rebooting:
 
 ```
+export PATH="$PATH:/media/fat/linux/aotools"
 eval "$(/media/fat/linux/aotools/aotools shellinit)"
 ```
 
@@ -52,7 +58,7 @@ aotools mount vhd <name.vhd>      (or `mountvhd <name.vhd>` via the shell functi
 aotools umount vhd                (or `umountvhd`)
 aotools mount chd <name.chd>      (or `mountchd <name.chd>`)
 aotools umount chd                (or `umountchd`)
-aotools install                   (one-time: wire shell functions into every future shell)
+aotools install                   (one-time: wire shell functions + PATH into every future shell)
 aotools uninstall                 (reverses install -- removes the user-startup.sh wiring only)
 aotools shellinit                 (prints the shell functions; used internally by `install`)
 aotools doctor                    (reports on qemu/chdman/templates/mtools/etc. -- see README.md)
@@ -95,7 +101,8 @@ All of this ran end-to-end on your actual MiSTer during development, not just co
 - `doctor`: confirmed it correctly reports `[ok]` for every dependency on a MiSTer that already has the original ao486 DOS Toolkit set up
 - A full, real `chd create` end-to-end run against the user's own Simon the Sorcerer II CD (`SIMON2.CUE`/`SIMON2.BIN`, ~407MB raw) -- produced a valid 177MB `.chd` (`chdman info` confirms correct track metadata), which was then itself successfully mounted via `aotools mount chd` and showed the genuine game installer files, proving the full create → mount round trip works on freshly-created output, not just on a CHD someone else made
 - `install`'s dependency-download offer: tested by safely renaming real dependencies (`mtools`, then separately `dos_template.vhd`) aside (not deleting them), then running the full flow against real user-startup.sh/network conditions -- declined first (confirmed it skips cleanly with no side effects), then accepted with the "I agree" acknowledgment (confirmed each download completes, lands at the exact right path with the right permissions, and is byte-for-byte identical to the original file), then restored the originals and cleaned up all test artifacts. The `dos_template.vhd` link was corrected mid-project (the first version pointed at the same archive.org file as `win31_template.vhd`, almost certainly a paste error) -- re-verified against the corrected link.
-- `uninstall`: tested against the real, live `user-startup.sh` (backed up first) -- confirmed it cleanly removes exactly the two-line block `install` added and nothing else (rest of the file byte-for-byte unchanged), confirmed `install` cleanly re-adds it afterward, and confirmed running `uninstall` a second time (nothing installed) correctly reports "Not installed" instead of erroring or corrupting the file. Real file restored from backup and re-verified `install`-idempotent afterward before moving on.
+- `uninstall`: tested against the real, live `user-startup.sh` (backed up first) -- confirmed it cleanly removes exactly the block `install` added and nothing else (rest of the file byte-for-byte unchanged), confirmed `install` cleanly re-adds it afterward, and confirmed running `uninstall` a second time (nothing installed) correctly reports "Not installed" instead of erroring or corrupting the file. Real file restored from backup and re-verified `install`-idempotent afterward before moving on.
+- `install` adding `aotools` itself to `$PATH` (and `uninstall` removing it): backed up the real, live `user-startup.sh` to `/tmp/user-startup.sh.pre-path-upgrade.bak` first. Ran two dry runs against a `/tmp`-copied test binary (upgrade-from-legacy-format, then upgrade+uninstall+re-uninstall-idempotency), restoring the real file from backup after each. Then ran the real, permanent upgrade using the actual deployed binary (`/media/fat/linux/aotools/aotools install`), which correctly detected the machine's pre-existing older (shell-functions-only) install and upgraded it in place to the current begin/end block with the PATH export -- confirmed the live file now reads exactly `export PATH="$PATH:/media/fat/linux/aotools"` followed by the `eval "$(.../aotools shellinit)"` line, bracketed by the begin/end markers. Verified in a genuinely fresh `bash -c` subshell launched from `/tmp` that `which aotools` resolves, `aotools -v` and `aotools doctor` both work, and -- the exact command that previously failed for the user with "command not found" -- `aotools mount vhd simon2.vhd` run from `/media/fat/games/ao486/media/simon2` succeeds and reports the correct mount point. Cleaned up by unmounting the test VHD and deleting the temporary backup file.
 
 `chd create` was exercised end-to-end against that same real CD image, producing a fresh `.chd` that was itself then successfully mounted (see below).
 

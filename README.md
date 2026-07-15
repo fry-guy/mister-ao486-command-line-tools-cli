@@ -1,8 +1,8 @@
 # aotools — MiSTer ao486 DOS Toolkit, single-binary edition
 
-`aotools` offers a set of command-line tools for building, converting, and launching DOS games on the MiSTer's ao486 core.
+`aotools` is a single-file replacement for the ao486 DOS Toolkit scripts (`mkvhd`, `resizevhd`, `mkmgl`, `mkchd`, `mkima`, `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the Python helpers behind them). Everything those separate scripts used to do, `aotools` now does from one executable, with no Python and no compiler required to run it.
 
-This readme is a plain-English user guide: what to install, in what order, and exactly what each command does and expects. For build/development notes (rebuilding from source, what was tested, bugs found along the way), see `INSTALL.md`.
+This file is the plain-English user guide: what to install, in what order, and exactly what each command does and expects. For build/development notes (rebuilding from source, what was tested, bugs found along the way), see `INSTALL.md`.
 
 ## Where things go on your MiSTer
 
@@ -41,15 +41,16 @@ Run `aotools doctor` at any time for a plain, read-only report on exactly what's
    ```
    /media/fat/linux/aotools/aotools install
    ```
-   This does two things in one step:
-   - Adds one line to `/media/fat/linux/user-startup.sh` (MiSTer's own boot script) so `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the `mkvhd`/`resizevhd`/`mkmgl`/`mkchd`/`mkima` shortcuts are available in every SSH session from now on. Safe to run more than once — it checks first and won't add a duplicate line.
+   This does three things in one step:
+   - Adds a small block to `/media/fat/linux/user-startup.sh` (MiSTer's own boot script) that puts `aotools` itself on your `$PATH` (so the bare `aotools <command>` form works from any directory, not just from inside `/media/fat/linux/aotools/`) and wires up `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the `mkvhd`/`resizevhd`/`mkmgl`/`mkchd`/`mkima` shortcuts, available in every SSH session from now on. Safe to run more than once — it checks first and won't add a duplicate block. If you installed an older version of `aotools` before this PATH addition existed, running `install` again automatically upgrades your existing setup to the current format rather than adding a second, conflicting block.
    - Checks for `qemu-system-i386`, `chdman`, `mtools`, the VHD templates, and the boot floppy (see the table above), and if anything's missing, offers to download it for you right then (with the copyright acknowledgment step described above). Decline and it just skips that part; accept and it fetches only what's actually missing.
 
 4. **Start using it.** Either reboot the MiSTer once, or, to use the commands in your *current* SSH session immediately without rebooting:
    ```
+   export PATH="$PATH:/media/fat/linux/aotools"
    eval "$(/media/fat/linux/aotools/aotools shellinit)"
    ```
-   After a reboot (or that one `eval` line), you can just type `mountvhd`, `mkvhd`, etc. directly — see the command reference below.
+   After a reboot (or those two lines), you can just type `mountvhd`, `mkvhd`, `aotools vhd create`, etc. directly, from any directory — see the command reference below.
 
 That's the entire install. Steps 1–2 are the only ones that touch the filesystem beyond `user-startup.sh` (and, only if you say yes to the download offer, the dependency files in the table above); nothing about your existing MiSTer setup, ao486 media, or save games is touched. Changed your mind? `aotools uninstall` reverses it completely — see below.
 
@@ -150,15 +151,17 @@ umountvhd                # back to where you were, unmounted
 ### `install` / `uninstall` / `shellinit` / `doctor` — setup and diagnostics
 
 ```
-aotools install     # one-time: wires the shell functions in AND offers to fetch missing deps
+aotools install     # one-time: adds aotools to $PATH, wires the shell functions in, AND offers to fetch missing deps
 aotools uninstall   # reverses exactly what install did to user-startup.sh -- nothing else
 aotools shellinit   # prints the shell functions (used internally by install/eval)
 aotools doctor      # read-only report on qemu/chdman/templates/etc. -- never downloads anything
 ```
 
-You generally only need `install` once (see "Step-by-step install") — it wires up the shell functions and, if anything from the dependency table is missing, offers to download it (always asking first, always requiring the copyright acknowledgment). Run `doctor` any time afterward, with no side effects at all, whenever something isn't behaving as expected and you want to rule out a missing dependency.
+You generally only need `install` once (see "Step-by-step install") — it puts `aotools` itself on `$PATH` (so plain `aotools vhd create ...`, `aotools mount vhd ...`, etc. work from any directory, not just from inside `/media/fat/linux/aotools/`), wires up the shell functions, and, if anything from the dependency table is missing, offers to download it (always asking first, always requiring the copyright acknowledgment). Run `doctor` any time afterward, with no side effects at all, whenever something isn't behaving as expected and you want to rule out a missing dependency.
 
-If you ever want to go back to exactly how things were before `aotools`, run `aotools uninstall`. It removes the one block `install` added to `/media/fat/linux/user-startup.sh` and nothing else — it does not delete the `aotools` binary, does not touch any VHD/CHD/game files you created with it, and does not remove any dependency file `install`'s download offer may have fetched for you. Since `aotools` never modified or removed the original ao486 DOS Toolkit scripts in the first place, `mountvhd`/`mkvhd`/etc. simply go back to resolving to those original scripts as soon as the wiring is gone (next reboot/new shell — or immediately in your current shell with `unset -f mountvhd umountvhd mountchd umountchd mkvhd resizevhd mkmgl mkchd mkima` if you'd already loaded them). Running `uninstall` again afterward (or when nothing was installed) is a safe no-op — it just tells you there's nothing to remove.
+If you installed an older version of `aotools` before it added itself to `$PATH`, just run `aotools install` again — it detects the older setup automatically and upgrades it in place (you'll see an "Upgraded existing install..." message instead of "Installed."). No need to uninstall first.
+
+If you ever want to go back to exactly how things were before `aotools`, run `aotools uninstall`. It removes the one block `install` added to `/media/fat/linux/user-startup.sh` (both the PATH export and the shell functions) and nothing else — it does not delete the `aotools` binary, does not touch any VHD/CHD/game files you created with it, and does not remove any dependency file `install`'s download offer may have fetched for you. Since `aotools` never modified or removed the original ao486 DOS Toolkit scripts in the first place, `mountvhd`/`mkvhd`/etc. simply go back to resolving to those original scripts as soon as the wiring is gone (next reboot/new shell — or immediately in your current shell with `unset -f mountvhd umountvhd mountchd umountchd mkvhd resizevhd mkmgl mkchd mkima`, though note `$PATH` itself only fully reverts in a genuinely fresh shell). Running `uninstall` again afterward (or when nothing was installed) is a safe no-op — it just tells you there's nothing to remove.
 
 ## Where things live
 
