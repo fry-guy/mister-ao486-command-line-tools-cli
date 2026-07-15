@@ -1,61 +1,55 @@
 # aotools — MiSTer ao486 DOS Toolkit, single-binary edition
 
-`aotools` is a single-file replacement for the ao486 DOS Toolkit scripts (`mkvhd`, `resizevhd`, `mkmgl`, `mkchd`, `mkima`, `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the Python helpers behind them). Everything those separate scripts used to do, `aotools` now does from one executable, with no Python and no compiler required to run it.
+`aotools` is a single-file replacement for the ao486 DOS Toolkit scripts (`mkvhd`, `resizevhd`, `mkmgl`, `mkchd`, `mkima`, `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the Python helpers behind them). One executable performs everything those separate scripts did, with no Python and no compiler required to run it.
 
-This file is the plain-English user guide: what to install, in what order, and exactly what each command does and expects. For build/development notes (rebuilding from source, what was tested, bugs found along the way), see `INSTALL.md`.
+This file covers installation and command usage. For build and development notes, see `INSTALL.md`.
 
-## Where things go on your MiSTer
+## Installation
 
-`aotools` itself is a single file: `/media/fat/linux/aotools/aotools`. It is **not** dropped loose directly into `/media/fat/linux` — it lives in its own `aotools` subfolder underneath it, so it can't collide with any of the other tools/scripts already in `/media/fat/linux`. Create that subfolder if it doesn't exist yet. There is no second file (like the old `aotools-functions.sh`) to install alongside it — the shell functions are built into the one binary (see `install`/`shellinit` below).
+`aotools` is a single file. It installs to its own subfolder, `/media/fat/linux/aotools/`, rather than loose inside `/media/fat/linux`, so it does not collide with the other tools already there.
 
-## What `aotools` needs that it doesn't provide
+1. **Copy the file.** Copy `aotools` to `/media/fat/linux/aotools/aotools` (create the folder if it does not exist) — for example, over SCP: `scp aotools root@<mister-ip>:/media/fat/linux/aotools/aotools`.
 
-`aotools` is one file, but it isn't magic — it still drives the same external programs and data files the original scripts always needed. None of these are bundled inside `aotools` itself, for two different reasons: `qemu-system-i386`/`chdman`/`mtools` are separately-built, separately-licensed programs (embedding them would balloon the binary and raise licensing questions that aren't `aotools`'s to answer); the VHD templates and DOS boot floppy contain real, copyrighted Microsoft system files that no tool has the right to redistribute bundled inside itself.
-
-That said, **`aotools install` can now offer to download every one of them for you**, from known community-hosted copies, the same way community MiSTer installers like `update_all.sh` handle content they can't bundle themselves: it asks first, shows you exactly what it's about to fetch and where from, requires you to explicitly type `I agree` acknowledging these are third-party copyrighted files (not `aotools`'s own), and only then downloads. Nothing is fetched silently or automatically.
-
-| File | What it's for | Goes where on your MiSTer | Source `aotools install` downloads it from |
-|---|---|---|---|
-| `mtools` | Every VHD/floppy command | `/media/fat/linux/mtools` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
-| `chdman` | `chd create` / `mount chd` | `/media/fat/linux/chdman` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
-| `qemu-system-i386` | `vhd create -dos`/`-win31` | `/media/fat/linux/qemu-system-i386` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
-| `qemu-bios/` folder (42 files) | Bundled alongside qemu-system-i386, not separate | `/media/fat/linux/qemu-bios/` | same repo, `linux/qemu-bios/` |
-| `disk1.img` | Drives the automated DOS install for `vhd create -dos` | `/media/fat/games/ao486/floppy/DOS622/disk1.img` | archive.org (MS-DOS 6.22 w/ Enhanced Tools floppy set) |
-| `dos_template.vhd` | Pre-built DOS system disk `vhd create -dos` builds on | `/media/fat/games/ao486/dos_template.vhd` | archive.org (`dos-6.22_202607`) |
-| `win31_template.vhd` | Pre-built DOS+Windows 3.1 disk `vhd create -win31` clones | `/media/fat/games/ao486/win31_template.vhd` | archive.org (`win31_template`) |
-
-You never have to deal with any of this if you already have a working ao486 DOS Toolkit setup (you've made DOS/Windows 3.1 games before) — you already have every file above, and `aotools install` will simply report everything as `[ok]` and skip the download offer entirely.
-
-Run `aotools doctor` at any time for a plain, read-only report on exactly what's present and what's missing (it never offers to download anything — that's only ever part of `install`, on request).
-
-## Step-by-step install
-
-1. **Copy the file.** Copy the single `aotools` binary to `/media/fat/linux/aotools/aotools` on your MiSTer (create the `aotools` folder if it doesn't exist). This is the only file you need — over SFTP/SCP, or `scp aotools root@<mister-ip>:/media/fat/linux/aotools/aotools`.
-
-2. **Make it executable.** Over SSH:
+2. **Make it executable.**
    ```
    chmod +x /media/fat/linux/aotools/aotools
    ```
 
-3. **Install.**
+3. **Run the installer.**
    ```
    /media/fat/linux/aotools/aotools install
    ```
-   This does three things in one step:
-   - Puts `aotools` itself on your `$PATH` (so the bare `aotools <command>` form works from any directory, not just from inside `/media/fat/linux/aotools/`) and wires up `mountvhd`, `umountvhd`, `mountchd`, `umountchd`, and the `mkvhd`/`resizevhd`/`mkmgl`/`mkchd`/`mkima` shortcuts. It does this by writing `/etc/profile.d/aotools.sh` (which every new login shell sources automatically) right now, *and* adding a small block to `/media/fat/linux/user-startup.sh` (MiSTer's persistent boot script) that recreates that same file on every future boot, so it keeps working after a reboot too. Safe to run more than once — it checks first and won't add a duplicate block. If you installed an older version of `aotools`, running `install` again automatically upgrades your existing setup rather than adding a second, conflicting block.
-   - Checks for `qemu-system-i386`, `chdman`, `mtools`, the VHD templates, and the boot floppy (see the table above), and if anything's missing, offers to download it for you right then (with the copyright acknowledgment step described above). Decline and it just skips that part; accept and it fetches only what's actually missing.
+   This adds `aotools` to `$PATH` and wires up the shell functions and shortcuts (`mountvhd`, `umountvhd`, `mountchd`, `umountchd`, `mkvhd`, `resizevhd`, `mkmgl`, `mkchd`, `mkima`), then checks for the external tools and data files listed below and offers to download anything missing. Running `install` again is safe: an existing installation is detected and left alone, or upgraded automatically if it predates a newer version.
 
-4. **Start using it.** Because `install` writes `/etc/profile.d/aotools.sh` immediately, **just open a new SSH session** (no reboot needed) and `mountvhd`, `mkvhd`, `aotools vhd create`, etc. all work directly, from any directory — see the command reference below. Your *current* SSH session (the one you ran `install` from) won't pick it up on its own, since a shell only reads its PATH once, when it starts; if you want it in that same session without opening a new one, run:
+4. **Start using it.** The changes take effect immediately for any new SSH session. The current session — the one `install` ran in — does not pick them up automatically, since a shell reads `$PATH` only once, at startup. To load them into the current session without reconnecting:
    ```
    export PATH="$PATH:/media/fat/linux/aotools"
    eval "$(/media/fat/linux/aotools/aotools shellinit)"
    ```
 
-That's the entire install. Steps 1–2 are the only ones that touch the filesystem beyond `user-startup.sh`/`/etc/profile.d/aotools.sh` (and, only if you say yes to the download offer, the dependency files in the table above); nothing about your existing MiSTer setup, ao486 media, or save games is touched. Changed your mind? `aotools uninstall` reverses it completely — see below.
+Only steps 1–2 touch the filesystem outside `user-startup.sh` and `/etc/profile.d/aotools.sh`, aside from the dependency files below, which are only downloaded with confirmation. No existing MiSTer setup, ao486 media, or save data is affected. To reverse installation entirely, run `aotools uninstall`.
 
-## Command reference
+### External dependencies
 
-Every command can be run two ways: the long form, `aotools <command>`, or (once you've done step 4/5 above) a short shell function. Both do exactly the same thing — the short forms just save typing.
+`aotools` still relies on the same external programs and data files the original scripts required. None are bundled: `qemu-system-i386`, `chdman`, and `mtools` are separately licensed programs; the VHD templates and boot floppy contain copyrighted Microsoft system files that cannot be redistributed.
+
+`aotools install` can download all of them from known community-hosted sources, the same way installers such as `update_all.sh` handle content they cannot bundle themselves. It asks first, then requires pressing Enter to proceed or Esc to cancel before downloading anything.
+
+| File | Used by | Location | Source |
+|---|---|---|---|
+| `mtools` | Every VHD/floppy command | `/media/fat/linux/mtools` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
+| `chdman` | `chd create` / `mount chd` | `/media/fat/linux/chdman` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
+| `qemu-system-i386` | `vhd create -dos` / `-win31` | `/media/fat/linux/qemu-system-i386` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
+| `qemu-bios/` (42 files) | Bundled with qemu-system-i386 | `/media/fat/linux/qemu-bios/` | same repo, `linux/qemu-bios/` |
+| `disk1.img` | Drives the automated install for `vhd create -dos` | `/media/fat/games/ao486/floppy/DOS622/disk1.img` | archive.org (MS-DOS 6.22 w/ Enhanced Tools floppy set) |
+| `dos_template.vhd` | Base DOS system disk for `vhd create -dos` | `/media/fat/games/ao486/dos_template.vhd` | archive.org (`dos-6.22_202607`) |
+| `win31_template.vhd` | Base DOS+Windows 3.1 disk for `vhd create -win31` | `/media/fat/games/ao486/win31_template.vhd` | archive.org (`win31_template`) |
+
+An existing ao486 DOS Toolkit setup already has every file above; `install` reports each as `[ok]` and skips the download offer. Run `aotools doctor` at any time for a read-only report on dependency status.
+
+## Commands
+
+Every command can be run as `aotools <command>`, or, once installed, through a shorter shell function that does the same thing.
 
 ### `vhd create` — build a new DOS/Windows 3.1 hard disk image
 
@@ -66,15 +60,15 @@ aotools vhd create -win31 <name.vhd> [archive]
 ```
 Shell shortcut: `mkvhd [-dos|-win31] <name.vhd> [archive]`
 
-- With no flag: creates a blank, unformatted `.vhd` container of a size you choose. You'd format it yourself.
-- `-dos`: creates the VHD, then boots a real (invisible, automated) virtual PC to run genuine MS-DOS `FORMAT` and install DOS onto it — the same as if you'd done it by hand, just automated. Takes 1–2 minutes.
-- `-win31`: creates the VHD by cloning a pre-built, already-working DOS + Windows 3.1 install (much faster than a real Windows 3.1 install, since that's already done for you).
-- `[archive]` (optional, `-dos`/`-win31` only): a `.zip`/`.tar`/`.tar.gz`/`.tar.bz2` file containing a game. If given, `aotools` extracts it onto the new VHD, asks you to pick which file inside it actually launches the game (if that isn't obvious), and wires up `AUTOEXEC.BAT` (DOS) or the Windows 3.1 startup (`WIN.INI`) to launch it automatically.
-- You'll be prompted for a size in MB if one isn't obvious from the archive contents; a suggested size is calculated for you.
+- With no flag: creates a blank, unformatted `.vhd` container at a chosen size, to be formatted separately.
+- `-dos`: creates the VHD, then boots an automated virtual PC to run genuine MS-DOS `FORMAT` and install DOS onto it — equivalent to a manual install, completed in 1–2 minutes.
+- `-win31`: creates the VHD by cloning a pre-built DOS + Windows 3.1 install, which is faster than a real Windows 3.1 installation.
+- `[archive]` (optional, `-dos`/`-win31` only): a `.zip`/`.tar`/`.tar.gz`/`.tar.bz2` file containing a game. If provided, `aotools` extracts it onto the new VHD, prompts for the launch executable if it is not obvious, and updates `AUTOEXEC.BAT` (DOS) or the Windows 3.1 startup (`WIN.INI`) to launch it automatically.
+- If a size is not obvious from the archive contents, a prompt requests one in MB, with a suggested value provided.
 
 Examples:
 ```
-aotools vhd create blank200.vhd                     # blank 200MB-ish container, you format it
+aotools vhd create blank200.vhd                     # blank 200MB-ish container
 aotools vhd create -dos mygame.vhd game.zip          # DOS game, ready to play
 aotools vhd create -win31 mywingame.vhd wingame.zip  # Windows 3.1 game, ready to play
 ```
@@ -86,16 +80,16 @@ aotools vhd resize <name.vhd>
 ```
 Shell shortcut: `resizevhd <name.vhd>`
 
-Rebuilds `<name.vhd>` at a larger size, copying every file across exactly as-is (boot sector, hidden/system file attributes, and all). Useful when a VHD you already made is running low on space. Shows you the current size, how much space is actually used, and a suggested new size; you can accept the suggestion or type your own. Verifies the copy byte-for-byte before replacing the original, and keeps a timestamped backup of the original unless you explicitly confirm overwriting it.
+Rebuilds `<name.vhd>` at a larger size, copying every file across exactly as-is, including the boot sector and hidden/system file attributes. Useful when an existing VHD is running low on space. Reports the current size, space used, and a suggested new size, which can be accepted or overridden. Verifies the copy byte-for-byte before replacing the original, and keeps a timestamped backup unless overwriting is explicitly confirmed.
 
-### `mgl create` — make a MiSTer game-launcher file
+### `mgl create` — create a MiSTer game-launcher file
 
 ```
 aotools mgl create -dos|-win31 "Display Name" [source_folder]
 ```
 Shell shortcut: `mkmgl -dos|-win31 "Display Name" [source_folder]`
 
-Scans `source_folder` (defaults to the current directory) for the `.vhd`/`.chd`/`.iso`/`.cue`/floppy image files that make up a game, and writes a `.mgl` file — the small XML file MiSTer's menu uses to know what to load for the ao486 core — into `/media/fat/_DOS Games` or `/media/fat/_Win 3.1 Games`. If more than one candidate of a given type is found, you're asked which one to use.
+Scans `source_folder` (defaults to the current directory) for the `.vhd`/`.chd`/`.iso`/`.cue`/floppy image files that make up a game, and writes a `.mgl` file — the XML file MiSTer's menu uses to load content for the ao486 core — into `/media/fat/_DOS Games` or `/media/fat/_Win 3.1 Games`. If more than one candidate of a given type is found, a prompt requests a choice.
 
 Example:
 ```
@@ -110,14 +104,14 @@ aotools chd create <input.iso|.cue|.bin|.gdi> <output.chd>
 ```
 Shell shortcut: `mkchd <input> <output.chd>`
 
-Compresses a raw CD image (`.iso`, or a `.cue`+`.bin` pair, etc.) into MAME's `.chd` format, which is what the ao486 core actually mounts — much smaller than the raw image, no quality lost. For `.cue`/`.gdi`/`.toc` inputs, `aotools` finds every file the descriptor references (e.g. the `.bin` a `.cue` points at) and, once the `.chd` is made, offers to delete the now-redundant originals — it always asks first and defaults to keeping them if you just press Enter.
+Compresses a raw CD image (`.iso`, or a `.cue`+`.bin` pair, etc.) into MAME's `.chd` format, which the ao486 core mounts directly, at a fraction of the size with no quality loss. For `.cue`/`.gdi`/`.toc` inputs, `aotools` locates every file the descriptor references and, once the `.chd` is created, offers to delete the now-redundant originals. Pressing Enter at the prompt keeps them by default.
 
 Example:
 ```
 aotools chd create MYGAME.cue mygame.chd
 ```
 
-### `ima create` — make a floppy disk image
+### `ima create` — create a floppy disk image
 
 ```
 aotools ima create <name.ima>
@@ -127,9 +121,9 @@ aotools ima create <name.ima> <source> -s <size>
 ```
 Shell shortcut: `mkima <name.ima> [source] [-s size]`
 
-Creates a blank, formatted floppy image (1.44MB by default), or one sized to fit `<source>` (a folder, or an archive that gets extracted onto it) if given. Valid `-s` sizes: `360k`, `720k`, `1.2m`, `1.44m`, `2.88m`.
+Creates a blank, formatted floppy image (1.44MB by default), or one sized to fit `<source>` — a folder, or an archive to be extracted onto it — if provided. Valid `-s` sizes: `360k`, `720k`, `1.2m`, `1.44m`, `2.88m`.
 
-### `mount vhd` / `mount chd` — open a disk image as a real folder
+### `mount vhd` / `mount chd` — open a disk image as a folder
 
 ```
 aotools mount vhd <name.vhd>      or:  mountvhd <name.vhd>
@@ -138,37 +132,31 @@ aotools mount chd <name.chd>      or:  mountchd <name.chd>
 aotools umount chd                or:  umountchd
 ```
 
-Mounts the contents of a `.vhd` or `.chd` as a real, browsable/editable folder, so you can drop files in or pull them out without any special tools, and `cd`'s you into it automatically. **Both forms on each line above do exactly the same thing** — once `aotools install`/`shellinit` has loaded (see "Step-by-step install"), typing `aotools mount vhd`/`aotools umount vhd`/`aotools mount chd`/`aotools umount chd` at the prompt behaves identically to `mountvhd`/`umountvhd`/`mountchd`/`umountchd`, including the automatic `cd`. (Under the hood, `aotools` itself becomes a shell function once installed, so there's no separate binary-vs-function distinction to think about — you can freely mix the two spellings and they share the same state. The only case where mount/umount *can't* `cd` you anywhere is if you run the binary by its literal full path with no shell integration loaded at all — a subprocess can never change its parent shell's own working directory, which is a hard OS limitation, not a choice this tool makes.) Always pair a `mount` with the matching `umount` when you're done, which `cd`'s you back to wherever you started and cleans up.
+Mounts the contents of a `.vhd` or `.chd` as a real, browsable folder and changes into it automatically. Once `aotools` is installed, both forms on each line above are equivalent — `aotools mount vhd`/`umount vhd`/`mount chd`/`umount chd` and their shorthand equivalents share the same underlying shell function and can be used interchangeably. Pair each `mount` with the matching `umount` when finished; this returns to the original directory and cleans up.
 
 Example:
 ```
-mountvhd mygame.vhd      # you're now inside the VHD's contents
+mountvhd mygame.vhd      # now inside the VHD's contents
 cp newpatch.exe .
-umountvhd                # back to where you were, unmounted
+umountvhd                # back to the original directory, unmounted
 ```
 
-**Editing text files (CONFIG.SYS, AUTOEXEC.BAT, etc.) with `nano` while mounted automatically fixes line endings for you.** Real MS-DOS/Windows 3.1 needs CRLF line endings in text files; `nano` over an SSH session saves plain Unix LF, which real hardware won't parse correctly — normally you'd have to remember to run `unix2dos` on the file yourself every time. Once `aotools install`/`shellinit` is loaded, `nano` is wrapped so this happens automatically: edit and save a file with `nano` while it's inside a mounted VHD or CHD, and the instant you exit, it's converted to DOS line endings for you (you'll see `(converted to DOS line endings for real hardware compatibility)` printed as confirmation). Files you edit anywhere *outside* a mount are left completely untouched — this only ever touches files inside `mountvhd`/`mountchd`'s mount point. Nothing to remember, nothing to type — just edit normally:
-```
-mountvhd mygame.vhd
-nano CONFIG.SYS          # edit and save as usual (Ctrl+O, Ctrl+X)
-                          # -> (converted to DOS line endings for real hardware compatibility)
-umountvhd
-```
+Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD or CHD is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. A confirmation message is printed after conversion. Files edited outside a mount are left untouched.
 
 ### `install` / `uninstall` / `shellinit` / `doctor` — setup and diagnostics
 
 ```
-aotools install     # adds aotools to $PATH, wires the shell functions in, AND offers to fetch missing deps
-aotools uninstall   # reverses exactly what install did -- nothing else
-aotools shellinit   # prints the shell functions (used internally by install/eval)
-aotools doctor      # read-only report on qemu/chdman/templates/etc. -- never downloads anything
+aotools install     # adds aotools to $PATH, wires the shell functions, offers to fetch missing dependencies
+aotools uninstall    # reverses install; leaves the binary, VHDs/CHDs, and downloaded dependencies in place
+aotools shellinit    # prints the shell functions (used internally by install and eval)
+aotools doctor       # read-only dependency report; never downloads anything
 ```
 
-You generally only need `install` once (see "Step-by-step install") — it puts `aotools` itself on `$PATH` (so plain `aotools vhd create ...`, `aotools mount vhd ...`, etc. work from any directory, not just from inside `/media/fat/linux/aotools/`), wires up the shell functions, and, if anything from the dependency table is missing, offers to download it (always asking first, always requiring the copyright acknowledgment). It takes effect for any *new* SSH session immediately — no reboot needed (it writes `/etc/profile.d/aotools.sh` on the spot, and also arranges for `user-startup.sh` to recreate that file on every future boot, so it survives reboots too). Run `doctor` any time afterward, with no side effects at all, whenever something isn't behaving as expected and you want to rule out a missing dependency.
+`install` is described in full under Installation above. Running it again is always safe, and an older installation is upgraded automatically if needed.
 
-If you installed an older version of `aotools`, just run `aotools install` again — it detects the older setup automatically and upgrades it in place (you'll see an "Upgraded existing install..." message instead of "Installed."). No need to uninstall first. (An earlier version of this feature wrote its PATH export directly into `user-startup.sh`, which turned out not to work for any SSH session opened after the one `install` ran in — `user-startup.sh` runs once at boot as its own standalone process, so anything it exports never reaches a later login shell. If you hit `aotools: command not found` after installing and rebooting, running `install` again will fix it.)
+`uninstall` removes only the `$PATH` and shell-function wiring `install` added. It does not delete the binary, touch any VHD/CHD files, or remove any downloaded dependency. Since the original ao486 DOS Toolkit scripts were never modified, `mountvhd`/`mkvhd`/etc. resolve back to them once the wiring is gone. Running `uninstall` again when nothing is installed is a safe no-op.
 
-If you ever want to go back to exactly how things were before `aotools`, run `aotools uninstall`. It removes the block `install` added to `/media/fat/linux/user-startup.sh` and deletes `/etc/profile.d/aotools.sh`, and nothing else — it does not delete the `aotools` binary, does not touch any VHD/CHD/game files you created with it, and does not remove any dependency file `install`'s download offer may have fetched for you. Since `aotools` never modified or removed the original ao486 DOS Toolkit scripts in the first place, `mountvhd`/`mkvhd`/etc. simply go back to resolving to those original scripts as soon as the wiring is gone (immediately, for any new SSH session — or right away in your current shell with `unset -f mountvhd umountvhd mountchd umountchd mkvhd resizevhd mkmgl mkchd mkima`, though note `$PATH` itself only fully reverts in a genuinely fresh shell). Running `uninstall` again afterward (or when nothing was installed) is a safe no-op — it just tells you there's nothing to remove.
+`doctor` reports on dependency status with no side effects and no download offer, for checking status at any time.
 
 ## Where things live
 
@@ -176,6 +164,6 @@ If you ever want to go back to exactly how things were before `aotools`, run `ao
 - DOS games: `/media/fat/_DOS Games`
 - Windows 3.1 games: `/media/fat/_Win 3.1 Games`
 - Game media (VHDs, CHDs, etc.) referenced by `.mgl` files: under `/media/fat/games/AO486/media/`
-- Everything `aotools` reads but doesn't ship (qemu, chdman, templates): see the dependency table above for exact paths.
+- External dependencies (qemu, chdman, templates): see the dependency table above for exact paths
 
-None of your existing files, folders, or games are touched by installing or running `aotools` unless you explicitly point a command at them (e.g. `vhd resize somegame.vhd` will, by design, modify `somegame.vhd`).
+No existing files, folders, or games are touched by installing or running `aotools` unless a command is explicitly pointed at them — for example, `vhd resize somegame.vhd` modifies `somegame.vhd` by design.
