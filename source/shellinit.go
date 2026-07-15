@@ -115,22 +115,57 @@ const legacyInstallMarker = "# --- aotools: mountvhd/umountvhd/mountchd/umountch
 // installMarkerBegin/installMarkerEnd delimit the current install
 // block, which (unlike the legacy one-marker/one-line format) can
 // safely hold any number of lines in between -- this is what makes
-// it possible to add the PATH export line below without hand-coding
+// it possible to change what the block does without hand-coding
 // "skip exactly N lines after the marker" logic that would silently
 // break the moment the block's shape changes again in the future.
 const installMarkerBegin = "# --- aotools:begin (shell functions + PATH) ---"
 const installMarkerEnd = "# --- aotools:end ---"
 
-// buildInstallBlock renders the full block `install` appends,
-// given the resolved self path.
-func buildInstallBlock(self string) string {
+// profileDHeredocTag is just the heredoc delimiter used inside the
+// user-startup.sh block below. Quoted (<<'TAG') so the shell does
+// NOT expand $PATH/$(...) at write time -- we want those written out
+// as literal text into profileDPath, to be expanded later when a
+// login shell actually sources that file.
+const profileDHeredocTag = "AOTOOLS_PROFILE_EOF"
+
+// buildProfileDContent renders what actually goes into profileDPath:
+// the PATH export plus the shell-function eval, exactly what a login
+// shell needs sourced into it.
+func buildProfileDContent(self string) string {
 	dir := filepath.Dir(self)
-	pathLine := fmt.Sprintf(`export PATH="$PATH:%s"`, dir)
-	evalLine := fmt.Sprintf(`eval "$(%s shellinit)"`, self)
+	return fmt.Sprintf("export PATH=\"$PATH:%s\"\neval \"$(%s shellinit)\"\n", dir, self)
+}
+
+// buildInstallBlock renders the full block `install` appends to
+// user-startup.sh. IMPORTANT: this does NOT export/eval anything
+// directly -- user-startup.sh runs once, as its own standalone child
+// process of the boot init system, so anything exported there dies
+// with that process and never reaches SSH sessions opened later (this
+// was a real bug: an earlier version of this block ran export/eval
+// directly here, which silently did nothing for any shell other than
+// user-startup.sh's own). Instead, this block (re)writes profileDPath
+// on every boot, which IS sourced by every login shell via
+// /etc/profile's own "for i in /etc/profile.d/*.sh" loop.
+func buildInstallBlock(self string) string {
+	body := buildProfileDContent(self)
 	return "\n" + installMarkerBegin + "\n" +
-		pathLine + "\n" +
-		evalLine + "\n" +
+		fmt.Sprintf("cat > %s <<'%s'\n", profileDPath, profileDHeredocTag) +
+		body +
+		profileDHeredocTag + "\n" +
 		installMarkerEnd + "\n"
+}
+
+// blockIsUpToDate reports whether the install block already present
+// in content uses the current profileDPath-writing mechanism, as
+// opposed to an older version of this block that tried to export/
+// eval directly (which never actually worked for new SSH sessions).
+func blockIsUpToDate(content string) bool {
+	start := strings.Index(content, installMarkerBegin)
+	end := strings.Index(content, installMarkerEnd)
+	if start == -1 || end == -1 || end < start {
+		return false
+	}
+	return strings.Contains(content[start:end], profileDPath)
 }
 
 // stripLegacyBlock removes a legacy-format block (marker line + the
@@ -187,13 +222,25 @@ func stripCurrentBlock(content string) string {
 
 // cmdInstall implements `aotools install`: a one-time, idempotent
 // setup step that wires the shell functions AND aotools itself onto
-// PATH into every future shell automatically, by appending a small
-// block to user-startup.sh (MiSTer's own boot hook), instead of
-// requiring the user to remember to source/export anything by hand.
-// Safe to run more than once. If it finds a block written by an
-// earlier version of aotools (shell functions only, no PATH export),
-// it transparently upgrades it to the current format rather than
-// leaving two separate blocks or silently not adding PATH.
+// PATH into every future shell automatically. Safe to run more than
+// once.
+//
+// The actual mechanism: user-startup.sh (persistent, on /media/fat,
+// run once per boot) is given a block that (re)writes profileDPath
+// (/etc/profile.d/aotools.sh) every boot. /etc/profile itself sources
+// every *.sh file under /etc/profile.d/ for every login shell, so
+// that's what actually reaches new SSH sessions -- user-startup.sh's
+// own export/eval never would (see the long comment on
+// buildInstallBlock). This function also writes profileDPath directly,
+// right now, so a new SSH session works immediately without waiting
+// for a reboot.
+//
+// If it finds a block written by an earlier version of aotools --
+// either the very first (shell functions only, no PATH) or the
+// version right after that (which exported/evaled directly in
+// user-startup.sh and silently didn't work for new SSH sessions) --
+// it transparently upgrades to the current mechanism rather than
+// leaving stale/broken blocks around.
 func cmdInstall() {
 	self, err := selfPath()
 	if err != nil {
@@ -207,9 +254,15 @@ func cmdInstall() {
 		content = string(existing)
 	}
 
-	if strings.Contains(content, installMarkerBegin) {
+	hasLegacy := strings.Contains(content, legacyInstallMarker)
+	hasCurrentBlock := strings.Contains(content, installMarkerBegin) && strings.Contains(content, installMarkerEnd)
+
+	if hasCurrentBlock && blockIsUpToDate(content) {
 		eprintf("Already installed: %s already sources aotools's shell functions\n", userStartupPath)
-		eprintln("and has aotools on PATH. Nothing to do.")
+		eprintln("and has aotools on PATH for every new SSH session. Nothing to do.")
+		if err := os.WriteFile(profileDPath, []byte(buildProfileDContent(self)), 0644); err != nil {
+			eprintf("warning: could not refresh %s: %v\n", profileDPath, err)
+		}
 		eprintln()
 		missing, qemuBiosMissing, _ := checkDependenciesDetailed()
 		eprintln()
@@ -217,9 +270,12 @@ func cmdInstall() {
 		return
 	}
 
-	upgrading := strings.Contains(content, legacyInstallMarker)
-	if upgrading {
+	upgrading := hasLegacy || hasCurrentBlock
+	if hasLegacy {
 		content = stripLegacyBlock(content)
+	}
+	if hasCurrentBlock {
+		content = stripCurrentBlock(content)
 	}
 
 	newContent := content + buildInstallBlock(self)
@@ -227,19 +283,32 @@ func cmdInstall() {
 		fatal("could not write to %s: %v", userStartupPath, err)
 	}
 
+	if err := os.WriteFile(profileDPath, []byte(buildProfileDContent(self)), 0644); err != nil {
+		eprintf("warning: could not write %s: %v\n", profileDPath, err)
+		eprintln("(user-startup.sh was updated regardless -- this will take effect on next boot)")
+	}
+
 	if upgrading {
-		eprintln("Upgraded existing install: your previous aotools setup only wired up")
-		eprintln("the shell functions. Re-added it in the current format, which also")
-		eprintf("puts aotools itself on PATH (added %s).\n", dir)
+		eprintln("Upgraded existing install.")
+		eprintln("Your previous setup wired PATH/shell functions directly into")
+		eprintln("user-startup.sh's own one-time boot process, which never actually reached")
+		eprintln("later SSH sessions -- that's why `aotools <command>` could report")
+		eprintln("\"command not found\" even after a reboot. Fixed: user-startup.sh now")
+		eprintf("(re)writes %s on every boot, which IS sourced by every\n", profileDPath)
+		eprintln("new login shell, and it's also been written right now so you don't have")
+		eprintln("to reboot to pick it up.")
 	} else {
 		eprintln("Installed.")
-		eprintf("Added to %s:\n", userStartupPath)
-		eprintf(`  export PATH="$PATH:%s"`+"\n", dir)
-		eprintf(`  eval "$(%s shellinit)"`+"\n", self)
+		eprintf("Added a block to %s that (re)creates %s\n", userStartupPath, profileDPath)
+		eprintln("on every boot -- that file puts aotools on PATH and loads the shell")
+		eprintln("functions for every new login shell. Also wrote it right now, for")
+		eprintln("immediate effect.")
 	}
 	eprintln()
-	eprintln("Takes effect on next boot / next new shell. To use it in your CURRENT")
-	eprintln("shell right now without rebooting, run:")
+	eprintln("Open a NEW SSH session and `aotools`, `mountvhd`, `mkvhd`, etc. will just")
+	eprintln("work -- no reboot needed. Your CURRENT shell won't see it (PATH is only")
+	eprintln("read when a shell starts); to use it in this session right now instead,")
+	eprintln("run:")
 	eprintf(`  export PATH="$PATH:%s"`+"\n", dir)
 	eprintf("  eval \"$(%s shellinit)\"\n", self)
 	eprintln()
@@ -265,18 +334,16 @@ func cmdInstall() {
 // place) with one command instead of hand-editing a system file.
 func cmdUninstall() {
 	existing, err := os.ReadFile(userStartupPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			eprintf("%s doesn't exist -- nothing to undo.\n", userStartupPath)
-			return
-		}
+	if err != nil && !os.IsNotExist(err) {
 		fatal("could not read %s: %v", userStartupPath, err)
 	}
 	content := string(existing)
 
 	hasCurrent := strings.Contains(content, installMarkerBegin) && strings.Contains(content, installMarkerEnd)
 	hasLegacy := strings.Contains(content, legacyInstallMarker)
-	if !hasCurrent && !hasLegacy {
+	profileDExists := fileExists(profileDPath)
+
+	if !hasCurrent && !hasLegacy && !profileDExists {
 		eprintf("Not installed: %s has no aotools shell-function/PATH wiring to remove.\n", userStartupPath)
 		return
 	}
@@ -288,12 +355,24 @@ func cmdUninstall() {
 		content = stripLegacyBlock(content)
 	}
 
-	if err := os.WriteFile(userStartupPath, []byte(content), 0755); err != nil {
-		fatal("could not write %s: %v", userStartupPath, err)
+	if hasCurrent || hasLegacy {
+		if err := os.WriteFile(userStartupPath, []byte(content), 0755); err != nil {
+			fatal("could not write %s: %v", userStartupPath, err)
+		}
+	}
+
+	if profileDExists {
+		if err := os.Remove(profileDPath); err != nil {
+			eprintf("warning: could not remove %s: %v\n", profileDPath, err)
+		}
 	}
 
 	eprintln("Uninstalled.")
-	eprintf("Removed aotools's shell-function/PATH wiring from %s.\n", userStartupPath)
+	eprintf("Removed aotools's shell-function/PATH wiring from %s", userStartupPath)
+	if profileDExists {
+		eprintf(" and deleted %s", profileDPath)
+	}
+	eprintln(".")
 	eprintln()
 	eprintln("Nothing else was touched -- the aotools binary itself, any VHDs/CHDs/")
 	eprintln("games you created with it, and any dependency files `install` may have")
@@ -301,9 +380,10 @@ func cmdUninstall() {
 	eprintln("original ao486 DOS Toolkit scripts were never modified in the first")
 	eprintln("place, so mountvhd/mkvhd/etc. now resolve back to them as before.")
 	eprintln()
-	eprintln("Takes effect on next reboot / next new shell. If your CURRENT shell")
-	eprintln("already has the functions/PATH loaded, remove them from just this")
-	eprintln("session with:")
+	eprintln("Takes effect immediately for any NEW SSH session (and, naturally, survives")
+	eprintln("future reboots too, since nothing recreates the wiring anymore). If your")
+	eprintln("CURRENT shell already has the functions/PATH loaded, remove them from just")
+	eprintln("this session with:")
 	eprintln("  unset -f mountvhd umountvhd mountchd umountchd mkvhd resizevhd mkmgl mkchd mkima")
 	eprintln(`  (PATH itself will only revert to normal in a fresh shell)`)
 }
