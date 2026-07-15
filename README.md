@@ -73,7 +73,7 @@ aotools vhd create -dos mygame.vhd game.zip          # DOS game, ready to play
 aotools vhd create -win31 mywingame.vhd wingame.zip  # Windows 3.1 game, ready to play
 ```
 
-### `vhd resize` — grow an existing VHD
+### `vhd resize` — grow or shrink an existing VHD
 
 ```
 aotools vhd resize <name.vhd>
