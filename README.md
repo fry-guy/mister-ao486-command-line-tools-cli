@@ -80,7 +80,7 @@ aotools vhd resize <name.vhd>
 ```
 Shell shortcut: `resizevhd <name.vhd>`
 
-Rebuilds `<name.vhd>` at a larger size, copying every file across exactly as-is, including the boot sector and hidden/system file attributes. Useful when an existing VHD is running low on space. Reports the current size, space used, and a suggested new size, which can be accepted or overridden. Verifies the copy byte-for-byte before replacing the original, and keeps a timestamped backup unless overwriting is explicitly confirmed.
+Rebuilds `<name.vhd>` at a different size, copying every file across exactly as-is, including the boot sector and hidden/system file attributes. Useful when an existing VHD is running low on space. Reports the current size, space used, and a suggested new size, which can be accepted or overridden. Verifies the copy byte-for-byte before replacing the original, and keeps a timestamped backup unless overwriting is explicitly confirmed.
 
 ### `mgl create` — create a MiSTer game-launcher file
 
