@@ -104,35 +104,112 @@ func cmdShellInit() {
 	fmt.Printf(shellFunctionsTemplate, self)
 }
 
-// installMarker is a fixed sentinel independent of the running
-// binary's own path/name (self path could be /tmp/aotools_test,
-// /media/fat/linux/aotools/aotools, or anything else depending on
-// where it's run from) -- checking for a literal "aotools shellinit"
-// substring instead would miss real installs whenever the binary
-// isn't named exactly "aotools" (e.g. "aotools_new" while testing a
-// fresh build), silently re-appending a duplicate block every run.
-const installMarker = "# --- aotools: mountvhd/umountvhd/mountchd/umountchd/mkvhd/resizevhd/mkmgl/mkchd/mkima ---"
+// legacyInstallMarker is the single-line marker the very first
+// version of `install` wrote (comment line immediately followed by
+// just the eval line, nothing else). Kept around permanently so
+// `install`/`uninstall` can recognize and safely upgrade/remove a
+// block written by that earlier version, rather than assuming every
+// real-world install already matches the current begin/end format.
+const legacyInstallMarker = "# --- aotools: mountvhd/umountvhd/mountchd/umountchd/mkvhd/resizevhd/mkmgl/mkchd/mkima ---"
+
+// installMarkerBegin/installMarkerEnd delimit the current install
+// block, which (unlike the legacy one-marker/one-line format) can
+// safely hold any number of lines in between -- this is what makes
+// it possible to add the PATH export line below without hand-coding
+// "skip exactly N lines after the marker" logic that would silently
+// break the moment the block's shape changes again in the future.
+const installMarkerBegin = "# --- aotools:begin (shell functions + PATH) ---"
+const installMarkerEnd = "# --- aotools:end ---"
+
+// buildInstallBlock renders the full block `install` appends,
+// given the resolved self path.
+func buildInstallBlock(self string) string {
+	dir := filepath.Dir(self)
+	pathLine := fmt.Sprintf(`export PATH="$PATH:%s"`, dir)
+	evalLine := fmt.Sprintf(`eval "$(%s shellinit)"`, self)
+	return "\n" + installMarkerBegin + "\n" +
+		pathLine + "\n" +
+		evalLine + "\n" +
+		installMarkerEnd + "\n"
+}
+
+// stripLegacyBlock removes a legacy-format block (marker line + the
+// one eval line right after it, plus one preceding blank line) from
+// content, matching exactly what the original `uninstall` did.
+func stripLegacyBlock(content string) string {
+	lines := strings.Split(content, "\n")
+	var kept []string
+	skipNext := false
+	for _, line := range lines {
+		if skipNext {
+			skipNext = false
+			continue
+		}
+		if strings.TrimSpace(line) == legacyInstallMarker {
+			skipNext = true
+			if len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
+				kept = kept[:len(kept)-1]
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
+
+// stripCurrentBlock removes everything from installMarkerBegin
+// through installMarkerEnd (inclusive), plus one preceding blank
+// line. Robust to the block containing any number of lines, unlike
+// the legacy fixed-offset removal above.
+func stripCurrentBlock(content string) string {
+	lines := strings.Split(content, "\n")
+	var kept []string
+	inBlock := false
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inBlock && trimmed == installMarkerBegin {
+			inBlock = true
+			if len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
+				kept = kept[:len(kept)-1]
+			}
+			continue
+		}
+		if inBlock {
+			if trimmed == installMarkerEnd {
+				inBlock = false
+			}
+			continue
+		}
+		kept = append(kept, line)
+	}
+	return strings.Join(kept, "\n")
+}
 
 // cmdInstall implements `aotools install`: a one-time, idempotent
-// setup step that wires the shell functions into every future shell
-// automatically by appending a single `eval "$(... shellinit)"` line
-// to user-startup.sh (MiSTer's own boot hook), instead of requiring
-// the user to remember to source a separate file by hand. Safe to
-// run more than once -- it checks for its own marker before adding
-// anything.
+// setup step that wires the shell functions AND aotools itself onto
+// PATH into every future shell automatically, by appending a small
+// block to user-startup.sh (MiSTer's own boot hook), instead of
+// requiring the user to remember to source/export anything by hand.
+// Safe to run more than once. If it finds a block written by an
+// earlier version of aotools (shell functions only, no PATH export),
+// it transparently upgrades it to the current format rather than
+// leaving two separate blocks or silently not adding PATH.
 func cmdInstall() {
 	self, err := selfPath()
 	if err != nil {
 		fatal("could not determine my own executable path: %v", err)
 	}
-
-	evalLine := fmt.Sprintf(`eval "$(%s shellinit)"`, self)
+	dir := filepath.Dir(self)
 
 	existing, readErr := os.ReadFile(userStartupPath)
-	if readErr == nil && strings.Contains(string(existing), installMarker) {
-		eprintf("Already installed: %s already sources aotools's shell functions.\n", userStartupPath)
-		eprintln("Nothing to do. (Delete the existing 'aotools shellinit' line there first")
-		eprintln("if you want this to re-add it, e.g. after moving the binary.)")
+	content := ""
+	if readErr == nil {
+		content = string(existing)
+	}
+
+	if strings.Contains(content, installMarkerBegin) {
+		eprintf("Already installed: %s already sources aotools's shell functions\n", userStartupPath)
+		eprintln("and has aotools on PATH. Nothing to do.")
 		eprintln()
 		missing, qemuBiosMissing, _ := checkDependenciesDetailed()
 		eprintln()
@@ -140,24 +217,30 @@ func cmdInstall() {
 		return
 	}
 
-	f, err := os.OpenFile(userStartupPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0755)
-	if err != nil {
-		fatal("could not open %s: %v", userStartupPath, err)
+	upgrading := strings.Contains(content, legacyInstallMarker)
+	if upgrading {
+		content = stripLegacyBlock(content)
 	}
-	defer f.Close()
 
-	block := "\n# --- aotools: mountvhd/umountvhd/mountchd/umountchd/mkvhd/resizevhd/mkmgl/mkchd/mkima ---\n" +
-		evalLine + "\n"
-	if _, err := f.WriteString(block); err != nil {
+	newContent := content + buildInstallBlock(self)
+	if err := os.WriteFile(userStartupPath, []byte(newContent), 0755); err != nil {
 		fatal("could not write to %s: %v", userStartupPath, err)
 	}
 
-	eprintln("Installed.")
-	eprintf("Added to %s:\n", userStartupPath)
-	eprintf("  %s\n", evalLine)
+	if upgrading {
+		eprintln("Upgraded existing install: your previous aotools setup only wired up")
+		eprintln("the shell functions. Re-added it in the current format, which also")
+		eprintf("puts aotools itself on PATH (added %s).\n", dir)
+	} else {
+		eprintln("Installed.")
+		eprintf("Added to %s:\n", userStartupPath)
+		eprintf(`  export PATH="$PATH:%s"`+"\n", dir)
+		eprintf(`  eval "$(%s shellinit)"`+"\n", self)
+	}
 	eprintln()
 	eprintln("Takes effect on next boot / next new shell. To use it in your CURRENT")
 	eprintln("shell right now without rebooting, run:")
+	eprintf(`  export PATH="$PATH:%s"`+"\n", dir)
 	eprintf("  eval \"$(%s shellinit)\"\n", self)
 	eprintln()
 	missing, qemuBiosMissing, _ := checkDependenciesDetailed()
@@ -167,19 +250,19 @@ func cmdInstall() {
 
 // cmdUninstall implements `aotools uninstall`: the exact reverse of
 // the one persistent system change `aotools install` makes -- it
-// removes the "# --- aotools: ... ---" comment line and the eval
-// line right after it from user-startup.sh, and nothing else.
+// removes exactly the block `install` added (shell functions AND,
+// in current-format installs, the PATH export) from user-startup.sh,
+// and nothing else.
 //
 // Deliberately conservative: it does NOT delete the aotools binary,
 // does NOT touch any VHD/CHD/game files created with it, and does
 // NOT remove any dependency (qemu/chdman/mtools/templates) that
 // `install`'s download offer may have fetched -- those are real
 // files the user asked for or already had, not install side effects.
-// This only ever undoes the shell-function wiring, so a user who
-// decides aotools isn't for them can get back to exactly the
-// original scripts (which were never touched or removed in the
-// first place) with one command instead of hand-editing a system
-// file.
+// This only ever undoes the shell-function/PATH wiring, so a user
+// who decides aotools isn't for them can get back to exactly the
+// original scripts (which were never touched or removed in the first
+// place) with one command instead of hand-editing a system file.
 func cmdUninstall() {
 	existing, err := os.ReadFile(userStartupPath)
 	if err != nil {
@@ -189,42 +272,28 @@ func cmdUninstall() {
 		}
 		fatal("could not read %s: %v", userStartupPath, err)
 	}
-
 	content := string(existing)
-	if !strings.Contains(content, installMarker) {
-		eprintf("Not installed: %s has no aotools shell-function wiring to remove.\n", userStartupPath)
+
+	hasCurrent := strings.Contains(content, installMarkerBegin) && strings.Contains(content, installMarkerEnd)
+	hasLegacy := strings.Contains(content, legacyInstallMarker)
+	if !hasCurrent && !hasLegacy {
+		eprintf("Not installed: %s has no aotools shell-function/PATH wiring to remove.\n", userStartupPath)
 		return
 	}
 
-	lines := strings.Split(content, "\n")
-	var kept []string
-	skipNext := false
-	for _, line := range lines {
-		if skipNext {
-			// the eval line immediately following the marker comment
-			skipNext = false
-			continue
-		}
-		if strings.TrimSpace(line) == installMarker {
-			skipNext = true
-			// also drop one blank line immediately before the marker
-			// (the leading "\n" install's own block starts with), so
-			// repeated install/uninstall cycles don't accumulate
-			// blank lines in user-startup.sh over time
-			if len(kept) > 0 && strings.TrimSpace(kept[len(kept)-1]) == "" {
-				kept = kept[:len(kept)-1]
-			}
-			continue
-		}
-		kept = append(kept, line)
+	if hasCurrent {
+		content = stripCurrentBlock(content)
+	}
+	if hasLegacy {
+		content = stripLegacyBlock(content)
 	}
 
-	if err := os.WriteFile(userStartupPath, []byte(strings.Join(kept, "\n")), 0755); err != nil {
+	if err := os.WriteFile(userStartupPath, []byte(content), 0755); err != nil {
 		fatal("could not write %s: %v", userStartupPath, err)
 	}
 
 	eprintln("Uninstalled.")
-	eprintf("Removed aotools's shell-function wiring from %s.\n", userStartupPath)
+	eprintf("Removed aotools's shell-function/PATH wiring from %s.\n", userStartupPath)
 	eprintln()
 	eprintln("Nothing else was touched -- the aotools binary itself, any VHDs/CHDs/")
 	eprintln("games you created with it, and any dependency files `install` may have")
@@ -233,7 +302,8 @@ func cmdUninstall() {
 	eprintln("place, so mountvhd/mkvhd/etc. now resolve back to them as before.")
 	eprintln()
 	eprintln("Takes effect on next reboot / next new shell. If your CURRENT shell")
-	eprintln("already has the functions loaded (e.g. you ran the shellinit eval")
-	eprintln("earlier), remove them from just this session with:")
+	eprintln("already has the functions/PATH loaded, remove them from just this")
+	eprintln("session with:")
 	eprintln("  unset -f mountvhd umountvhd mountchd umountchd mkvhd resizevhd mkmgl mkchd mkima")
+	eprintln(`  (PATH itself will only revert to normal in a fresh shell)`)
 }
