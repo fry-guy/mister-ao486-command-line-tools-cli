@@ -96,6 +96,38 @@ resizevhd() { aotools vhd resize "$@"; }
 mkmgl()     { aotools mgl create "$@"; }
 mkchd()     { aotools chd create "$@"; }
 mkima()     { aotools ima create "$@"; }
+
+# Real MS-DOS/Windows 3.1 needs CRLF line endings in text files like
+# CONFIG.SYS/AUTOEXEC.BAT; nano over an SSH session saves plain LF, which
+# real hardware won't parse correctly. This wrapper runs the real nano
+# (via "command nano", bypassing this function to avoid recursing) and
+# then, for any file argument that's inside a mounted VHD or CHD, runs
+# unix2dos on it automatically so you never have to remember to do it
+# by hand. Files outside a mount are left completely alone.
+nano() {
+    command nano "$@"
+    local rc=$?
+    local f rp converted=0
+    for f in "$@"; do
+        case "$f" in
+            -*) continue ;;
+        esac
+        [ -f "$f" ] || continue
+        rp="$(readlink -f "$f" 2>/dev/null)"
+        case "$rp" in
+            /tmp/vhd_mount/*|/media/fat/linux/.mountchd_mount/*)
+                if command -v unix2dos >/dev/null 2>&1; then
+                    unix2dos "$f" >/dev/null 2>&1
+                    converted=1
+                fi
+                ;;
+        esac
+    done
+    if [ "$converted" = "1" ]; then
+        echo "(converted to DOS line endings for real hardware compatibility)" >&2
+    fi
+    return $rc
+}
 `
 
 // selfPath resolves the absolute, symlink-free path to the currently
