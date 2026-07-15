@@ -147,14 +147,5 @@ Usage:
   aotools install
   aotools uninstall
   aotools shellinit
-  aotools doctor
-
-Once 'aotools install' has run (or you've loaded shell integration
-with 'eval "$(aotools shellinit)"'), 'aotools mount vhd'/'aotools
-umount vhd'/'aotools mount chd'/'aotools umount chd' automatically cd
-you into and back out of the mounted volume -- 'aotools' itself
-becomes a shell function that does this, so there's no separate
-syntax to remember. The legacy mountvhd/umountvhd/mountchd/umountchd/
-mkvhd/... shortcuts (embedded in this binary, no separate file) do
-the exact same thing and share the same state.`)
+  aotools doctor`)
 }
