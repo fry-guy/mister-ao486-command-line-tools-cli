@@ -1,0 +1,78 @@
+package main
+
+import "strings"
+
+// qemuAutoexecBatLines is qemu_autoexec.bat, embedded so the whole
+// toolkit is a single binary. Runs inside the QEMU-booted real DOS
+// 6.22 floppy to FORMAT C: /S and lay down the DOS/MISTER/DRIVERS/
+// UTIL folders + AUTOEXEC.BAT/CONFIG.SYS that every -dos VHD needs.
+// A: = boot floppy (DOS 6.22), C: = new VHD, D: = dos_template.vhd.
+var qemuAutoexecBatLines = []string{
+	"@ECHO OFF",
+	"REM ao486 VHD Auto-Setup - runs inside QEMU",
+	"REM A: = boot floppy (DOS 6.22)",
+	"REM C: = new VHD",
+	"REM D: = dos_template.vhd (source of DOS files)",
+	"",
+	"ECHO.",
+	"ECHO AO486 VHD Formatter - QEMU Automated Setup",
+	"ECHO ============================================",
+	"ECHO.",
+	"",
+	"REM Expand compressed tools we need",
+	"IF NOT EXIST A:\\XCOPY.EXE EXPAND A:\\XCOPY.EX_ A:\\XCOPY.EXE",
+	"",
+	"ECHO Step 1: Formatting C: and installing DOS boot sector...",
+	"ECHO.",
+	"",
+	"REM FORMAT C: /S writes the DOS boot sector and copies system files",
+	"FORMAT C: /S /Q /U /V:DOSGAME",
+	"",
+	"ECHO.",
+	"ECHO Step 2: Copying DOS system folders...",
+	"MD C:\\DOS",
+	"MD C:\\MISTER",
+	"MD C:\\DRIVERS",
+	"MD C:\\UTIL",
+	"A:\\XCOPY D:\\DOS C:\\DOS /S /E /Y",
+	"A:\\XCOPY D:\\MISTER C:\\MISTER /S /E /Y",
+	"A:\\XCOPY D:\\DRIVERS C:\\DRIVERS /S /E /Y",
+	"A:\\XCOPY D:\\UTIL C:\\UTIL /S /E /Y",
+	"",
+	"ECHO.",
+	"ECHO Step 3: Writing AUTOEXEC.BAT...",
+	"ECHO @ECHO OFF > C:\\AUTOEXEC.BAT",
+	"ECHO SET BLASTER=A220 I5 D1 H5 P330 T6 >> C:\\AUTOEXEC.BAT",
+	"ECHO SET MIDI=SYNTH:1 MAP:E >> C:\\AUTOEXEC.BAT",
+	"ECHO LH C:\\DOS\\DOSLFN /Z:C:\\DOS\\CP437UNI.TBL >> C:\\AUTOEXEC.BAT",
+	"ECHO LH /L:1,21744 C:\\MISTER\\MISTERFS.EXE Z >> C:\\AUTOEXEC.BAT",
+	"ECHO LH /L:3,28032 C:\\DOS\\MSCDEX.EXE /D:MSCD001 /L:D >> C:\\AUTOEXEC.BAT",
+	"ECHO LH /L:0;2,3328 /S C:\\DOS\\CTMOUSE /P /R99 >> C:\\AUTOEXEC.BAT",
+	"ECHO LH /L:2,13648 C:\\UTIL\\DOSKEY.COM >> C:\\AUTOEXEC.BAT",
+	"ECHO SET PATH=C:\\DOS;C:\\MISTER;C:\\UTIL >> C:\\AUTOEXEC.BAT",
+	"ECHO PROMPT $P$G >> C:\\AUTOEXEC.BAT",
+	"",
+	"ECHO.",
+	"ECHO Step 4: Writing CONFIG.SYS...",
+	"ECHO DEVICE=C:\\DOS\\HIMEM.SYS /TESTMEM:OFF > C:\\CONFIG.SYS",
+	"ECHO DEVICE=C:\\DOS\\EMM386.EXE RAM I=B000-B7FF 8192 FRAME=D000 D=256 I=C800-CDFF X=CE00-CFFF I=D000-EFFF >> C:\\CONFIG.SYS",
+	"ECHO BUFFERS=20,0 >> C:\\CONFIG.SYS",
+	"ECHO FILES=30 >> C:\\CONFIG.SYS",
+	"ECHO DOS=HIGH,UMB >> C:\\CONFIG.SYS",
+	"ECHO LASTDRIVE=Z >> C:\\CONFIG.SYS",
+	"ECHO FCBS=4,0 >> C:\\CONFIG.SYS",
+	"ECHO DEVICEHIGH /L:2,11264 =C:\\DRIVERS\\VIDE-CDD.SYS /D:MSCD001 >> C:\\CONFIG.SYS",
+	"",
+	"ECHO.",
+	"ECHO AO486 SETUP COMPLETE",
+	"ECHO ============================================",
+	"ECHO Halting...",
+	"DEBUG < NUL",
+	"",
+}
+
+// qemuAutoexecBat returns the file content with DOS-style CRLF line
+// endings, as the original qemu_autoexec.bat had.
+func qemuAutoexecBat() string {
+	return strings.Join(qemuAutoexecBatLines, "\r\n")
+}
