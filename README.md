@@ -1,6 +1,6 @@
 # aotools — MiSTer ao486 DOS Toolkit, single-binary edition
 
-`aotools` is a set of command line tools for building, converting, and lanching DOS and Windows 3.1 games on MiSTer's ao486 core.
+`aotools` is a set of command line tools for building, converting, and launching DOS and Windows 3.1 games on MiSTer's ao486 core.
 
 This file covers installation and command usage. For build and development notes, see `INSTALL.md`.
 
