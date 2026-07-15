@@ -147,6 +147,14 @@ cp newpatch.exe .
 umountvhd                # back to where you were, unmounted
 ```
 
+**Editing text files (CONFIG.SYS, AUTOEXEC.BAT, etc.) with `nano` while mounted automatically fixes line endings for you.** Real MS-DOS/Windows 3.1 needs CRLF line endings in text files; `nano` over an SSH session saves plain Unix LF, which real hardware won't parse correctly — normally you'd have to remember to run `unix2dos` on the file yourself every time. Once `aotools install`/`shellinit` is loaded, `nano` is wrapped so this happens automatically: edit and save a file with `nano` while it's inside a mounted VHD or CHD, and the instant you exit, it's converted to DOS line endings for you (you'll see `(converted to DOS line endings for real hardware compatibility)` printed as confirmation). Files you edit anywhere *outside* a mount are left completely untouched — this only ever touches files inside `mountvhd`/`mountchd`'s mount point. Nothing to remember, nothing to type — just edit normally:
+```
+mountvhd mygame.vhd
+nano CONFIG.SYS          # edit and save as usual (Ctrl+O, Ctrl+X)
+                          # -> (converted to DOS line endings for real hardware compatibility)
+umountvhd
+```
+
 ### `install` / `uninstall` / `shellinit` / `doctor` — setup and diagnostics
 
 ```
