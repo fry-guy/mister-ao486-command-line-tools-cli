@@ -128,11 +128,6 @@ func cmdVHDResize(args []string) {
 		fatal("%v", err)
 	}
 
-	eprintln("Writing DOS boot sector (preserving original boot code)...")
-	if err := writeBootSectorMerge(newVHD, partStartSector, bootOrig); err != nil {
-		fatal("failed to write boot sector: %v", err)
-	}
-
 	eprintln("Copying files...")
 	// IO.SYS/MSDOS.SYS/COMMAND.COM (if present) get copied FIRST and
 	// separately from everything else, directly via mtools (no loop
@@ -143,20 +138,39 @@ func cmdVHDResize(args []string) {
 	// hung on real ao486 hardware despite looking completely valid
 	// under every other check.
 	sysFiles := []string{"IO.SYS", "MSDOS.SYS", "COMMAND.COM"}
-	var sysItems, remainingItems []string
-	for _, e := range entries {
-		isSys := false
-		for _, sf := range sysFiles {
+	sysSet := map[string]bool{}
+	for _, sf := range sysFiles {
+		sysSet[strings.ToUpper(sf)] = true
+	}
+	// sysItems is built by iterating sysFiles (fixed IO.SYS, MSDOS.SYS,
+	// COMMAND.COM order), NOT by iterating entries -- os.ReadDir returns
+	// entries sorted alphabetically, and looping over entries here previously
+	// produced sysItems in alphabetical order (COMMAND.COM, IO.SYS, MSDOS.SYS).
+	// loopCopyIn copies its sources list in the exact order given, so that
+	// alphabetical order landed COMMAND.COM in the root directory's first
+	// entry slot instead of IO.SYS. MS-DOS 6.22's boot sector code loads the
+	// system files it finds by directory-entry POSITION, not by name search,
+	// so IO.SYS must be the very first root directory entry (MSDOS.SYS
+	// second) or the disk boots to "Non-System disk or disk error" even
+	// though every file's content is byte-for-byte correct and the boot
+	// sector's own code/BPB are perfectly valid. Reproduced and confirmed via
+	// real hardware + directory-entry-order inspection during the comprehensive
+	// resize vhd test pass; this fix makes sysItems always come out in
+	// canonical DOS boot order regardless of the original stage directory's
+	// listing order.
+	var sysItems []string
+	for _, sf := range sysFiles {
+		for _, e := range entries {
 			if strings.EqualFold(e.Name(), sf) {
-				isSys = true
+				sysItems = append(sysItems, filepath.Join(stageDir, e.Name()))
 				break
 			}
 		}
-		p := filepath.Join(stageDir, e.Name())
-		if isSys {
-			sysItems = append(sysItems, p)
-		} else {
-			remainingItems = append(remainingItems, p)
+	}
+	var remainingItems []string
+	for _, e := range entries {
+		if !sysSet[strings.ToUpper(e.Name())] {
+			remainingItems = append(remainingItems, filepath.Join(stageDir, e.Name()))
 		}
 	}
 	newImage := mtoolsImageArg(newVHD, partStartSector*512)
@@ -168,18 +182,51 @@ func cmdVHDResize(args []string) {
 	// isolated retries. Given the project's own hard-won lesson that
 	// mtools' bulk-copy path can't be fully trusted for real file
 	// content, system files get the reliable treatment too rather than
-	// risk an intermittent repeat. They're still copied FIRST, in their
-	// own loopCopyIn call, so they still claim early contiguous clusters
-	// the way real DOS always does.
-	if len(sysItems) > 0 {
-		if err := loopCopyIn(newVHD, partStartSector*512, "", sysItems, false); err != nil {
-			fatal("failed to write system files onto the new container: %v", err)
-		}
-	}
-	if len(remainingItems) > 0 {
-		if err := loopCopyIn(newVHD, partStartSector*512, "", remainingItems, true); err != nil {
+	// risk an intermittent repeat. They're still copied FIRST (within
+	// the single loopCopyIn call below), so they still claim early
+	// contiguous clusters the way real DOS always does.
+	//
+	// sysItems and remainingItems are copied via ONE combined loopCopyIn
+	// call (one loop-attach/mount/copy/unmount/detach cycle), not two
+	// separate ones as originally written. A real 2047MB resize was
+	// observed to come back missing IO.SYS/MSDOS.SYS/COMMAND.COM entirely
+	// -- confirmed via a raw kernel loop-mount listing, not just an
+	// mtools quirk -- while everything from the SECOND loopCopyIn call
+	// (remainingItems) was intact. That pattern only makes sense if the
+	// second call's fresh loop-attach + mount got a stale, pre-sysItems
+	// view of the root directory and treated IO.SYS/MSDOS.SYS/COMMAND.COM's
+	// directory slots as still free, overwriting them as it wrote
+	// remainingItems. Copying everything in a single mount session (still
+	// sysItems first, for the same early-contiguous-cluster reasoning)
+	// removes the second attach cycle entirely, so there's no window for
+	// a second mount to see a stale view of the first mount's writes.
+	allItems := append(append([]string{}, sysItems...), remainingItems...)
+	if len(allItems) > 0 {
+		if err := loopCopyIn(newVHD, partStartSector*512, "", allItems, true); err != nil {
 			fatal("failed to copy files onto the new container: %v", err)
 		}
+	}
+
+	// Boot sector merge happens LAST, after every loop-device operation
+	// (both loopCopyIn calls above) is completely finished -- not right
+	// after formatAndFixBPB, where it lived originally. A real 2047MB
+	// (near-max) resize was observed to silently lose this write: fixBPB
+	// and writeBootSectorMerge both reported success and logged correct
+	// values, but the FINAL on-disk boot sector still showed mkfs.vfat's
+	// own untouched defaults (OEM "mkfs.fat", 255 heads) instead of the
+	// merged/fixed values, causing a real "This is not a bootable disk"
+	// BIOS-level failure on hardware despite every other check passing.
+	// The only thing that runs between the original write point and the
+	// final file is loopCopyIn's own loop-attach/mount/copy/detach
+	// cycles; applyAttrManifest and the verification step below only
+	// use mtools' direct byte-offset access (mtoolsImageArg's "@@offset"
+	// form), never a kernel loop device. Writing the boot sector after
+	// all loop-device activity is done, with nothing loop-based touching
+	// the file afterward, removes the only plausible window for a stale
+	// loop-device cache to clobber a direct file write.
+	eprintln("Writing DOS boot sector (preserving original boot code)...")
+	if err := writeBootSectorMerge(newVHD, partStartSector, bootOrig); err != nil {
+		fatal("failed to write boot sector: %v", err)
 	}
 
 	applyAttrManifest(newImage, attrManifest, "")
