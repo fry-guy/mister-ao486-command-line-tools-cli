@@ -2,7 +2,7 @@
 
 `aotools` is a set of command line tools for building, converting, and launching DOS and Windows 3.1 games on MiSTer's ao486 core.
 
-This file covers installation and command usage. For build and development notes, see `INSTALL.md`.
+This file covers installation and command usage. For build and development notes, see `NOTES.md`.
 
 ## Installation
 
@@ -31,19 +31,19 @@ Only steps 1–2 touch the filesystem outside `user-startup.sh` and `/etc/profil
 
 ### External dependencies
 
-Several key functionalities of `aotools` require external programs and data files. None are bundled: `qemu-system-i386`, `chdman`, and `mtools` are separately licensed programs; the VHD templates and boot floppy contain copyrighted Microsoft system files that cannot be redistributed.
+Several key functionalities of `aotools` rely on external programs and data files. None are bundled: `qemu-system-i386`, `chdman`, and `mtools` are separately licensed programs; the VHD templates and boot floppy contain copyrighted Microsoft system files that cannot be redistributed.
 
 `aotools install` can instead download all of them from known community-hosted sources, the same way installers such as `update_all.sh` handle content they cannot bundle themselves. It asks first, then requires pressing Enter to proceed or Esc to cancel before downloading.
 
 | File | Used by | Location | Source |
 |---|---|---|---|
 | `mtools` | Every VHD/floppy command | `/media/fat/linux/mtools` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
-| `chdman` | `chd create` / `mount chd` | `/media/fat/linux/chdman` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
-| `qemu-system-i386` | `vhd create -dos` / `-win31` | `/media/fat/linux/qemu-system-i386` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
+| `chdman` | `create chd` / `mount chd` | `/media/fat/linux/chdman` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
+| `qemu-system-i386` | `create vhd -dos` / `-win31` | `/media/fat/linux/qemu-system-i386` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
 | `qemu-bios/` (42 files) | Bundled with qemu-system-i386 | `/media/fat/linux/qemu-bios/` | same repo, `linux/qemu-bios/` |
-| `disk1.img` | Drives the automated install for `vhd create -dos` | `/media/fat/games/ao486/floppy/DOS622/disk1.img` | archive.org (MS-DOS 6.22 w/ Enhanced Tools floppy set) |
-| `dos_template.vhd` | Base DOS system disk for `vhd create -dos` | `/media/fat/games/ao486/dos_template.vhd` | archive.org (`dos-6.22_202607`) |
-| `win31_template.vhd` | Base DOS+Windows 3.1 disk for `vhd create -win31` | `/media/fat/games/ao486/win31_template.vhd` | archive.org (`win31_template`) |
+| `disk1.img` | Drives the automated install for `create vhd -dos` | `/media/fat/games/ao486/floppy/DOS622/disk1.img` | archive.org (MS-DOS 6.22 w/ Enhanced Tools floppy set) |
+| `dos_template.vhd` | Base DOS system disk for `create vhd -dos` | `/media/fat/games/ao486/dos_template.vhd` | archive.org (`dos-6.22_202607`) |
+| `win31_template.vhd` | Base DOS+Windows 3.1 disk for `create vhd -win31` | `/media/fat/games/ao486/win31_template.vhd` | archive.org (`win31_template`) |
 
 An existing ao486 DOS Toolkit setup already has every file above; `install` reports each as `[ok]` and skips the download offer. Run `aotools doctor` at any time for a read-only report on dependency status.
 
@@ -51,41 +51,42 @@ An existing ao486 DOS Toolkit setup already has every file above; `install` repo
 
 Every command can be run as `aotools <command>`, or, once installed, through a shorter shell function that does the same thing.
 
-### `vhd create` — build a new DOS/Windows 3.1 hard disk image
+### `create vhd` — build a new DOS/Windows 3.1 hard disk image
 
 ```
-aotools vhd create <name.vhd>
-aotools vhd create -dos <name.vhd> [archive]
-aotools vhd create -win31 <name.vhd> [archive]
+aotools create vhd <name.vhd>
+aotools create vhd -dos <name.vhd> [archive|folder]
+aotools create vhd -win31 <name.vhd> [archive|folder]
 ```
-Shell shortcut: `mkvhd [-dos|-win31] <name.vhd> [archive]`
+Shell shortcut: `mkvhd [-dos|-win31] <name.vhd> [archive|folder]`
 
 - With no flag: creates a blank, unformatted `.vhd` container at a chosen size, to be formatted separately.
 - `-dos`: creates the VHD, then boots an automated virtual PC to run genuine MS-DOS `FORMAT` and install DOS onto it — equivalent to a manual install, completed in 1–2 minutes.
 - `-win31`: creates the VHD by cloning a pre-built DOS + Windows 3.1 install, which is faster than a real Windows 3.1 installation.
-- `[archive]` (optional, `-dos`/`-win31` only): a `.zip`/`.tar`/`.tar.gz`/`.tar.bz2` file containing a game. If provided, `aotools` extracts it onto the new VHD, prompts for the launch executable if it is not obvious, and updates `AUTOEXEC.BAT` (DOS) or the Windows 3.1 startup (`WIN.INI`) to launch it automatically.
-- If a size is not obvious from the archive contents, a prompt requests one in MB, with a suggested value provided.
+- `[archive|folder]` (optional, `-dos`/`-win31` only): a `.zip`/`.tar`/`.tar.gz`/`.tar.bz2` file, or a plain folder, containing a game. If provided, `aotools` copies its contents onto the new VHD, prompts for the launch executable if it is not obvious, and updates `AUTOEXEC.BAT` (DOS) or the Windows 3.1 startup (`WIN.INI`) to launch it automatically. Archive sources are offered for deletion afterward since the game is now on the VHD; folder sources are always left alone.
+- If a size is not obvious from the source contents, a prompt requests one in MB, with a suggested value provided.
 
 Examples:
 ```
-aotools vhd create blank200.vhd                     # blank 200MB-ish container
-aotools vhd create -dos mygame.vhd game.zip          # DOS game, ready to play
-aotools vhd create -win31 mywingame.vhd wingame.zip  # Windows 3.1 game, ready to play
+aotools create vhd blank200.vhd                     # blank 200MB-ish container
+aotools create vhd -dos mygame.vhd game.zip          # DOS game, ready to play
+aotools create vhd -dos mygame.vhd ./game-folder     # same, from an unpacked folder
+aotools create vhd -win31 mywingame.vhd wingame.zip  # Windows 3.1 game, ready to play
 ```
 
-### `vhd resize` — grow or shrink an existing VHD
+### `resize vhd` — grow or shrink an existing VHD
 
 ```
-aotools vhd resize <name.vhd>
+aotools resize vhd <name.vhd>
 ```
 Shell shortcut: `resizevhd <name.vhd>`
 
 Rebuilds `<name.vhd>` at a different size, copying every file across exactly as-is, including the boot sector and hidden/system file attributes. Useful when an existing VHD is running low on space. Reports the current size, space used, and a suggested new size, which can be accepted or overridden. Verifies the copy byte-for-byte before replacing the original, and keeps a timestamped backup unless overwriting is explicitly confirmed.
 
-### `mgl create` — create a MiSTer game-launcher file
+### `create mgl` — create a MiSTer game-launcher file
 
 ```
-aotools mgl create -dos|-win31 "Display Name" [source_folder]
+aotools create mgl -dos|-win31 "Display Name" [source_folder]
 ```
 Shell shortcut: `mkmgl -dos|-win31 "Display Name" [source_folder]`
 
@@ -94,13 +95,13 @@ Scans `source_folder` (defaults to the current directory) for the `.vhd`/`.chd`/
 Example:
 ```
 cd /media/fat/games/AO486/media/mygame
-aotools mgl create -dos "My Game"
+aotools create mgl -dos "My Game"
 ```
 
-### `chd create` — compress a CD image
+### `create chd` — compress a CD image
 
 ```
-aotools chd create <input.iso|.cue|.bin|.gdi> <output.chd>
+aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>
 ```
 Shell shortcut: `mkchd <input> <output.chd>`
 
@@ -108,31 +109,33 @@ Compresses a raw CD image (`.iso`, or a `.cue`+`.bin` pair, etc.) into MAME's `.
 
 Example:
 ```
-aotools chd create MYGAME.cue mygame.chd
+aotools create chd MYGAME.cue mygame.chd
 ```
 
-### `ima create` — create a floppy disk image
+### `create diskimage` — create a floppy disk image
 
 ```
-aotools ima create <name.ima>
-aotools ima create <name.ima> -s <size>
-aotools ima create <name.ima> <source>
-aotools ima create <name.ima> <source> -s <size>
+aotools create diskimage <name.ima>
+aotools create diskimage <name.ima> -s <size>
+aotools create diskimage <name.ima> <source>
+aotools create diskimage <name.ima> <source> -s <size>
 ```
 Shell shortcut: `mkima <name.ima> [source] [-s size]`
 
-Creates a blank, formatted floppy image (1.44MB by default), or one sized to fit `<source>` — a folder, or an archive to be extracted onto it — if provided. Valid `-s` sizes: `360k`, `720k`, `1.2m`, `1.44m`, `2.88m`.
+Creates a formatted floppy image, optionally injecting the contents of `<source>` — a folder, or a `.zip`/`.tar`/`.tar.gz`/`.tar.bz2` archive — onto it. If `-s` isn't given, `aotools` prompts with a numbered list of the standard sizes (`360k`, `720k`, `1.2m`, `1.44m`, `2.88m`); pressing Enter selects the default, `1.44m`, and if a source was given, the smallest size it fits is flagged as recommended. Passing `-s` directly skips the prompt.
 
-### `mount vhd` / `mount chd` — open a disk image as a folder
+### `mount vhd` / `mount chd` / `mount diskimage` — open a disk image as a folder
 
 ```
-aotools mount vhd <name.vhd>      or:  mountvhd <name.vhd>
-aotools umount vhd                or:  umountvhd
-aotools mount chd <name.chd>      or:  mountchd <name.chd>
-aotools umount chd                or:  umountchd
+aotools mount vhd <name.vhd>            or:  mountvhd <name.vhd>
+aotools umount vhd                      or:  umountvhd
+aotools mount chd <name.chd>            or:  mountchd <name.chd>
+aotools umount chd                      or:  umountchd
+aotools mount diskimage <name.ima>
+aotools umount diskimage
 ```
 
-Mounts the contents of a `.vhd` or `.chd` as a real, browsable folder and changes into it automatically. Once `aotools` is installed, both forms on each line above are equivalent — `aotools mount vhd`/`umount vhd`/`mount chd`/`umount chd` and their shorthand equivalents share the same underlying shell function and can be used interchangeably. Pair each `mount` with the matching `umount` when finished; this returns to the original directory and cleans up.
+Mounts the contents of a `.vhd`, `.chd`, or `.ima` as a real, browsable folder and changes into it automatically. Once `aotools` is installed, both forms on the `vhd`/`chd` lines above are equivalent — `aotools mount vhd`/`umount vhd`/`mount chd`/`umount chd` and their shorthand equivalents share the same underlying shell function and can be used interchangeably; `mount diskimage`/`umount diskimage` have no separate shorthand form. Pair each `mount` with the matching `umount` when finished; this returns to the original directory and cleans up.
 
 Example:
 ```
@@ -141,7 +144,7 @@ cp newpatch.exe .
 umountvhd                # back to the original directory, unmounted
 ```
 
-Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD or CHD is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. A confirmation message is printed after conversion. Files edited outside a mount are left untouched.
+Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD, CHD, or disk image is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. A confirmation message is printed after conversion. Files edited outside a mount are left untouched.
 
 ### `install` / `uninstall` / `shellinit` / `doctor` — setup and diagnostics
 
@@ -166,4 +169,4 @@ aotools doctor       # read-only dependency report; never downloads anything
 - Game media (VHDs, CHDs, etc.) referenced by `.mgl` files: under `/media/fat/games/AO486/media/`
 - External dependencies (qemu, chdman, templates): see the dependency table above for exact paths
 
-No existing files, folders, or games are touched by installing or running `aotools` unless a command is explicitly pointed at them — for example, `vhd resize somegame.vhd` modifies `somegame.vhd` by design.
+No existing files, folders, or games are touched by installing or running `aotools` unless a command is explicitly pointed at them — for example, `resize vhd somegame.vhd` modifies `somegame.vhd` by design.
