@@ -25,9 +25,25 @@ func eprintln(a ...interface{}) {
 	fmt.Fprintln(os.Stderr, a...)
 }
 
+// fatalExit is the panic value fatal() uses to unwind the call stack
+// -- running every registered defer along the way, including scratch
+// staging-directory cleanup (os.RemoveAll(stageDir) etc.) -- before
+// the process actually exits. fatal() previously called os.Exit(1)
+// directly, which terminates the process immediately and skips ALL
+// deferred cleanup; a failed resize vhd/create vhd -win31/create
+// diskimage partway through could leave its staging directory behind
+// under the big-scratch area (documented as a "Known limitation" in
+// NOTES.md, then directly observed to cause a real failure elsewhere
+// once enough orphaned directories piled up). main() recovers this
+// specific type and exits with status 1 only after every defer along
+// the failing call stack has already run; any other panic value is
+// re-panicked so a genuine bug still surfaces as a real crash instead
+// of being silently swallowed.
+type fatalExit struct{}
+
 func fatal(format string, a ...interface{}) {
 	fmt.Fprintf(os.Stderr, "Error: "+format+"\n", a...)
-	os.Exit(1)
+	panic(fatalExit{})
 }
 
 // runCapture runs a command and returns combined stdout+stderr, trimmed.

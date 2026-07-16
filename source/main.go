@@ -10,7 +10,7 @@
 //
 // Usage:
 //
-//	aotools create vhd [-dos|-win31] <name.vhd> [archive|folder]
+//	aotools create vhd [-dos|-win31] <name.vhd> [archive]
 //	aotools resize vhd <name.vhd>
 //	aotools create mgl -dos|-win31 "Display Name" [source_folder]
 //	aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>
@@ -50,7 +50,27 @@ import (
 
 const version = "1.0.0"
 
+// main wraps run() in a recover that catches fatal()'s fatalExit
+// panic (see util.go) and only then exits with status 1 -- by that
+// point the panic has already unwound the whole call stack, running
+// every defer registered along the way (temp/staging directory
+// cleanup included). Any panic value that ISN'T a fatalExit is
+// re-panicked immediately, so a genuine bug still crashes normally
+// with a real stack trace instead of being mistaken for a clean
+// "Error: ..." exit.
 func main() {
+	defer func() {
+		if r := recover(); r != nil {
+			if _, ok := r.(fatalExit); ok {
+				os.Exit(1)
+			}
+			panic(r)
+		}
+	}()
+	run()
+}
+
+func run() {
 	if len(os.Args) < 2 {
 		printTopUsage()
 		os.Exit(1)
@@ -137,7 +157,7 @@ func printTopUsage() {
 	eprintln(`aotools ` + version + ` - MiSTer ao486 DOS Toolkit (single-binary port)
 
 Usage:
-  aotools create vhd [-dos|-win31] <name.vhd> [archive|folder]
+  aotools create vhd [-dos|-win31] <name.vhd> [archive]
   aotools resize vhd <name.vhd>
   aotools create mgl -dos|-win31 "Display Name" [source_folder]
   aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>
