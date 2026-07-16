@@ -174,7 +174,7 @@ func cmdIMACreate(args []string) {
 		stageDir := source
 		stageIsTemp := false
 		if !isDir(source) {
-			td, err := os.MkdirTemp("", "mkima_stage_")
+			td, err := mktempBig() // not os.MkdirTemp("", ...) -- see vhdresize.go's stageDir comment
 			if err != nil {
 				os.Remove(outPath)
 				fatal("%v", err)

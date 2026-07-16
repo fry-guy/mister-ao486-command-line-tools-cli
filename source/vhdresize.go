@@ -40,7 +40,21 @@ func cmdVHDResize(args []string) {
 
 	eprintf("Reading %s...\n", sourceName)
 	sourceImage := mtoolsImageArg(abs, partStartSector*512)
-	stageDir, err := os.MkdirTemp("", "resizevhd_stage_")
+	// mktempBig() (under bigScratchBase on /media/fat), not a plain
+	// os.MkdirTemp("", ...) (which defaults to /tmp, a ~240MB tmpfs).
+	// A real resize against Windows 3.1 content (more files, larger
+	// total size than the plain-DOS VHDs this was originally tested
+	// against) hit "No space left on device" here -- not because this
+	// one resize was too big by itself, but because /tmp had ~200MB of
+	// orphaned stageDir/verifyDir directories left over from EARLIER
+	// failed resize attempts in the same session (the documented "Known
+	// limitation": fatal() calls os.Exit, which skips deferred cleanup).
+	// That existing limitation means /tmp usage can only grow over a
+	// session, so anything that stages real file content needs to be on
+	// the much larger /media/fat scratch area instead, matching what
+	// createWin31VHD and injectDOSArchive/cmdIMACreate already do for
+	// the exact same reason.
+	stageDir, err := mktempBig()
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -232,7 +246,7 @@ func cmdVHDResize(args []string) {
 	applyAttrManifest(newImage, attrManifest, "")
 
 	eprintln("Verifying copy...")
-	verifyDir, err := os.MkdirTemp("", "resizevhd_verify_")
+	verifyDir, err := mktempBig() // see stageDir above for why not os.MkdirTemp("", ...)
 	if err != nil {
 		fatal("%v", err)
 	}

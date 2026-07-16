@@ -528,39 +528,50 @@ func createWin31VHD(outPath, archive string) {
 		fatal("%v", err)
 	}
 
-	eprintln("Writing boot sector...")
-	if err := writeBootSectorMerge(outPath, partStartSector, bootOrig); err != nil {
-		os.Remove(outPath)
-		fatal("%v", err)
-	}
-
 	eprintln("Copying Windows 3.1 files...")
 	sysFiles := []string{"IO.SYS", "MSDOS.SYS", "COMMAND.COM"}
-	var sysItems, remainingItems []string
+	sysSet := map[string]bool{}
+	for _, sf := range sysFiles {
+		sysSet[strings.ToUpper(sf)] = true
+	}
 	entries, _ := os.ReadDir(stageDir)
-	for _, e := range entries {
-		isSys := false
-		for _, sf := range sysFiles {
+	// sysItems is built by iterating sysFiles (fixed IO.SYS, MSDOS.SYS,
+	// COMMAND.COM order), NOT by iterating entries -- os.ReadDir returns
+	// entries sorted alphabetically. See the identical fix (and its full
+	// explanation) in cmdVHDResize/vhdresize.go: MS-DOS 6.22's boot
+	// sector loads system files by directory-entry POSITION, not by
+	// name, so building this list in alphabetical order put COMMAND.COM
+	// in the first root directory slot instead of IO.SYS, breaking boot
+	// with "Non-System disk or disk error" despite every file's content
+	// being correct. This exact bug was found and fixed in resize vhd
+	// first; createWin31VHD has the identical pattern and needed the
+	// identical fix.
+	var sysItems []string
+	for _, sf := range sysFiles {
+		for _, e := range entries {
 			if strings.EqualFold(e.Name(), sf) {
-				isSys = true
+				sysItems = append(sysItems, filepath.Join(stageDir, e.Name()))
 				break
 			}
 		}
-		p := filepath.Join(stageDir, e.Name())
-		if isSys {
-			sysItems = append(sysItems, p)
-		} else {
-			remainingItems = append(remainingItems, p)
+	}
+	var remainingItems []string
+	for _, e := range entries {
+		if !sysSet[strings.ToUpper(e.Name())] {
+			remainingItems = append(remainingItems, filepath.Join(stageDir, e.Name()))
 		}
 	}
-	if len(sysItems) > 0 {
-		if err := loopCopyIn(outPath, partStartSector*512, "", sysItems, false); err != nil {
-			os.Remove(outPath)
-			fatal("failed to copy Windows 3.1 system files onto the new container: %v", err)
-		}
-	}
-	if len(remainingItems) > 0 {
-		if err := loopCopyIn(outPath, partStartSector*512, "", remainingItems, true); err != nil {
+	// sysItems and remainingItems are copied via ONE combined loopCopyIn
+	// call, not two separate ones -- see the identical fix in
+	// cmdVHDResize/vhdresize.go. Two separate loop-attach/mount cycles on
+	// this hardware's kernel/loop-driver combination were observed (on
+	// resize vhd, same underlying mechanism) to let the second mount see
+	// a stale, pre-first-call view of the root directory and overwrite
+	// the first call's directory entries as if their slots were still
+	// free. A single mount session removes that window entirely.
+	mainItems := append(append([]string{}, sysItems...), remainingItems...)
+	if len(mainItems) > 0 {
+		if err := loopCopyIn(outPath, partStartSector*512, "", mainItems, true); err != nil {
 			os.Remove(outPath)
 			fatal("failed to copy Windows 3.1 files onto the new container: %v", err)
 		}
@@ -647,6 +658,24 @@ func createWin31VHD(outPath, archive string) {
 				eprintln("Keeping source archive.")
 			}
 		}
+	}
+
+	// Boot sector merge happens LAST, after every loop-device operation
+	// (the main content copy above, and the archive/game injection copy
+	// just above it if present) is completely finished -- not right
+	// after formatAndFixBPB, where it originally ran. Identical fix (and
+	// full explanation) as cmdVHDResize/vhdresize.go: a direct raw-file
+	// write done before a later loop-attach/mount cycle on this
+	// hardware's kernel/loop-driver combination can be silently
+	// clobbered when that later mount gets a stale view of the file.
+	// applyAttrManifest calls above use mtools' direct byte-offset
+	// access (never a kernel loop device), so they're unaffected either
+	// way; only writeBootSectorMerge's direct os.File write needed to
+	// move.
+	eprintln("Writing boot sector (preserving original boot code)...")
+	if err := writeBootSectorMerge(outPath, partStartSector, bootOrig); err != nil {
+		os.Remove(outPath)
+		fatal("failed to write boot sector: %v", err)
 	}
 
 	eprintln()
