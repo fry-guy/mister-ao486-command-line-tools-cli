@@ -20,15 +20,16 @@ import (
 // something this tool can work around by being cleverer. So instead
 // of `aotools` on your PATH ever resolving straight to the binary,
 // `install`/`shellinit` define `aotools` itself as a shell function:
-// it special-cases `mount vhd`/`umount vhd`/`mount chd`/`umount chd`
-// to do the actual cd in your live shell (remembering where you were
-// so umount can put you back), and passes every other subcommand
-// straight through to the real binary via $AOTOOLS untouched. Because
-// bash looks up shell functions before PATH, typing `aotools ...` at
-// the prompt always goes through this wrapper once it's loaded -- so
-// `aotools mount vhd x.vhd` and the legacy `mountvhd x.vhd` shortcut
-// below are literally the same code path, sharing the same
-// AOTOOLS_VHD_PREV_DIR/AOTOOLS_CHD_PREV_DIR state, and behave
+// it special-cases `mount vhd`/`umount vhd`/`mount chd`/`umount chd`/
+// `mount diskimage`/`umount diskimage` to do the actual cd in your
+// live shell (remembering where you were so umount can put you back),
+// and passes every other subcommand straight through to the real
+// binary via $AOTOOLS untouched. Because bash looks up shell functions
+// before PATH, typing `aotools ...` at the prompt always goes through
+// this wrapper once it's loaded -- so `aotools mount vhd x.vhd` and
+// the legacy `mountvhd x.vhd` shortcut below are literally the same
+// code path, sharing the same AOTOOLS_VHD_PREV_DIR/
+// AOTOOLS_CHD_PREV_DIR/AOTOOLS_IMA_PREV_DIR state, and behave
 // identically. (Only if you invoke the binary by its full path
 // directly, bypassing the shell entirely, do you get the raw
 // non-cd'ing behavior -- there's no other way to do it.)
@@ -70,6 +71,21 @@ aotools() {
             "$AOTOOLS" umount chd
             unset AOTOOLS_CHD_PREV_DIR
             ;;
+        "mount diskimage")
+            local mp
+            mp="$("$AOTOOLS" mount diskimage "$3")" || return 1
+            AOTOOLS_IMA_PREV_DIR="$PWD"
+            cd "$mp" || return 1
+            ;;
+        "umount diskimage")
+            if [ -n "$AOTOOLS_IMA_PREV_DIR" ] && [ -d "$AOTOOLS_IMA_PREV_DIR" ]; then
+                cd "$AOTOOLS_IMA_PREV_DIR"
+            else
+                cd /tmp
+            fi
+            "$AOTOOLS" umount diskimage
+            unset AOTOOLS_IMA_PREV_DIR
+            ;;
         *)
             "$AOTOOLS" "$@"
             ;;
@@ -87,15 +103,15 @@ umountchd()  { aotools umount chd; }
 mkvhd() {
     if [ "$1" = "-dos" ] || [ "$1" = "-win31" ]; then
         local flag="$1"; shift
-        aotools vhd create "$flag" "$@"
+        aotools create vhd "$flag" "$@"
     else
-        aotools vhd create "$@"
+        aotools create vhd "$@"
     fi
 }
-resizevhd() { aotools vhd resize "$@"; }
-mkmgl()     { aotools mgl create "$@"; }
-mkchd()     { aotools chd create "$@"; }
-mkima()     { aotools ima create "$@"; }
+resizevhd() { aotools resize vhd "$@"; }
+mkmgl()     { aotools create mgl "$@"; }
+mkchd()     { aotools create chd "$@"; }
+mkima()     { aotools create diskimage "$@"; }
 
 # Real MS-DOS/Windows 3.1 needs CRLF line endings in text files like
 # CONFIG.SYS/AUTOEXEC.BAT; nano over an SSH session saves plain LF, which
@@ -115,7 +131,7 @@ nano() {
         [ -f "$f" ] || continue
         rp="$(readlink -f "$f" 2>/dev/null)"
         case "$rp" in
-            /tmp/vhd_mount/*|/media/fat/linux/.mountchd_mount/*)
+            /tmp/vhd_mount/*|/media/fat/linux/.mountchd_mount/*|/tmp/ima_mount/*)
                 if command -v unix2dos >/dev/null 2>&1; then
                     unix2dos "$f" >/dev/null 2>&1
                     converted=1
@@ -319,9 +335,7 @@ func cmdInstall() {
 		if err := os.WriteFile(profileDPath, []byte(buildProfileDContent(self)), 0644); err != nil {
 			eprintf("warning: could not refresh %s: %v\n", profileDPath, err)
 		}
-		eprintln()
 		missing, qemuBiosMissing, _ := checkDependenciesDetailed()
-		eprintln()
 		offerFetchMissing(missing, qemuBiosMissing)
 		return
 	}
@@ -369,7 +383,6 @@ func cmdInstall() {
 	eprintf("  eval \"$(%s shellinit)\"\n", self)
 	eprintln()
 	missing, qemuBiosMissing, _ := checkDependenciesDetailed()
-	eprintln()
 	offerFetchMissing(missing, qemuBiosMissing)
 }
 

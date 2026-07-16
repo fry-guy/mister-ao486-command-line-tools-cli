@@ -30,19 +30,19 @@ const qemuBiosSentinel = "QEMU_BIOS_DIR"
 // acknowledgment -- these are never aotools's own files to give
 // away).
 var fixedPathDeps = []depCheck{
-	{"mtools", mtoolsBin, "needed by every VHD/floppy command (vhd create, vhd resize, mgl create, ima create)",
+	{"mtools", mtoolsBin, "needed by every VHD/floppy command (create vhd, resize vhd, create mgl, create diskimage)",
 		"https://raw.githubusercontent.com/fry-guy/mister-ao486-command-line-tools-cli/main/mtools", true},
-	{"chdman", chdmanBin, "needed by `chd create` and `mount chd`",
+	{"chdman", chdmanBin, "needed by `create chd` and `mount chd`",
 		"https://raw.githubusercontent.com/fry-guy/mister-ao486-command-line-tools-cli/main/chdman", true},
-	{"qemu-system-i386", qemuBin, "needed by `vhd create -dos` and `vhd create -win31`",
+	{"qemu-system-i386", qemuBin, "needed by `create vhd -dos` and `create vhd -win31`",
 		"https://raw.githubusercontent.com/fry-guy/mister-ao486-command-line-tools-cli/main/qemu-system-i386", true},
 	{"qemu BIOS directory", qemuBiosDir, "QEMU's own standard bundled data dir -- comes with qemu-system-i386 automatically, not a separate download",
 		qemuBiosSentinel, false},
-	{"DOS boot floppy (disk1.img)", floppySrc, "needed by `vhd create -dos` to drive the real FORMAT+XCOPY install",
+	{"DOS boot floppy (disk1.img)", floppySrc, "needed by `create vhd -dos` to drive the real FORMAT+XCOPY install",
 		"https://archive.org/download/ms-dos-6.22-with-enchanced-tools-floppy-disks_20231027/MS-DOS%206.22%20with%20Enchanced%20Tools%20Floppy%20Disks.7z/MS-DOS%206.22%20with%20Enchanced%20Tools%20Floppy%20Disks%2FMS-DOS%206.22%20with%20Enchanced%20Tools%20Floppy%20Disks%2FDisk1.img", false},
-	{"DOS VHD template", dosTemplate, "needed by `vhd create -dos` for its DOS/MISTER/DRIVERS/UTIL overhead",
+	{"DOS VHD template", dosTemplate, "needed by `create vhd -dos` for its DOS/MISTER/DRIVERS/UTIL overhead",
 		"https://archive.org/download/dos-6.22_202607/dos_template.vhd", false},
-	{"Windows 3.1 VHD template", win31Template, "needed by `vhd create -win31`",
+	{"Windows 3.1 VHD template", win31Template, "needed by `create vhd -win31`",
 		"https://archive.org/download/win31_template/win31_template.vhd", false},
 }
 
@@ -83,7 +83,7 @@ var pathDeps = []string{"mkfs.vfat", "mount", "losetup", "unix2dos"}
 // true even before this port existed. What it CAN do, and does here,
 // is check for all of it up front and report exactly what's missing
 // and why, instead of letting a user hit a confusing failure deep
-// inside `vhd create -dos` five minutes later. Where a known-good
+// inside `create vhd -dos` five minutes later. Where a known-good
 // community-hosted copy exists, `aotools install` separately offers
 // to fetch it on request -- see fetch.go.
 func checkDependencies() bool {
@@ -98,7 +98,6 @@ func checkDependencies() bool {
 // go on to offer downloading them.
 func checkDependenciesDetailed() (missing []depCheck, qemuBiosMissing bool, allOK bool) {
 	eprintln("Checking for required external tools and data files...")
-	eprintln()
 	allOK = true
 	for _, c := range fixedPathDeps {
 		if fileExists(c.path) {
@@ -122,20 +121,15 @@ func checkDependenciesDetailed() (missing []depCheck, qemuBiosMissing bool, allO
 			eprintf("  [MISSING] %-28s not found on PATH\n", bin)
 		}
 	}
-	eprintln()
 	if allOK {
 		eprintln("Everything aotools depends on is present.")
-	} else {
-		eprintln("aotools itself is a single file and is fully installed. The items")
-		eprintln("marked MISSING above are separate from aotools -- they're the same")
-		eprintln("external MiSTer tools and DOS/Windows 3.1 media the original ao486")
-		eprintln("DOS Toolkit always required. aotools can't bundle or provide them")
-		eprintln("(qemu/chdman/mtools are external packages with their own licensing;")
-		eprintln("the VHD templates and boot floppy contain real, copyrighted")
-		eprintln("DOS/Windows system files aotools has no right to redistribute).")
-		eprintln("Commands that don't need a missing item above will still work fine")
-		eprintln("-- e.g. `mgl create` doesn't need qemu or chdman at all.")
 	}
+	// The not-allOK explanation (why items are missing, and that
+	// aotools can offer to download them) is printed by
+	// offerFetchMissing instead, right before it asks -- that's the
+	// only caller that can actually act on it. `doctor`, which also
+	// calls this function but never offers downloads, just shows the
+	// bare table above.
 	return missing, qemuBiosMissing, allOK
 }
 

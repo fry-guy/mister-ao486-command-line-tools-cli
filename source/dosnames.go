@@ -12,9 +12,7 @@ import (
 var nonAlnum = regexp.MustCompile(`[^A-Z0-9]`)
 
 // dosShortName derives a DOS 6.22-compatible 8.3 short name (no
-// extension) from an archive path: strip directory + known archive
-// extensions, uppercase, strip invalid chars, truncate to "6+~1" if
-// over 8 characters. Mirrors dos_short_name() in mkvhd/mkima.
+// extension) from an archive path.
 func dosShortName(raw string) string {
 	base := filepath.Base(raw)
 	lower := strings.ToLower(base)
@@ -49,7 +47,6 @@ func dosShortName(raw string) string {
 
 // dosShortFilename is like dosShortName but for an individual file:
 // preserves the extension (uppercased, max 3 chars) separately.
-// Mirrors dos_short_filename().
 func dosShortFilename(raw string) string {
 	name := filepath.Base(raw)
 	var base, ext string
@@ -76,7 +73,7 @@ func dosShortFilename(raw string) string {
 }
 
 // dosShortDirname is like dosShortName but for a single directory
-// path component (no extension handling). Mirrors dos_short_dirname().
+// path component (no extension handling).
 func dosShortDirname(raw string) string {
 	base := nonAlnum.ReplaceAllString(strings.ToUpper(raw), "")
 	if base == "" {
@@ -90,9 +87,7 @@ func dosShortDirname(raw string) string {
 
 // resolveShortComponent resolves a single path component (file or
 // directory) under dir to a safe DOS 8.3 short name, renaming it on
-// disk if needed. Falls back to the original name only on a genuine
-// collision with a DIFFERENT existing entry. Mirrors
-// resolve_short_component().
+// disk if needed.
 func resolveShortComponent(original, dir string, isDirEntry bool) (string, error) {
 	var shortname string
 	if isDirEntry {
@@ -128,10 +123,7 @@ func resolveShortComponent(original, dir string, isDirEntry bool) (string, error
 // selectLaunchExecutable scans gamedir (recursively) for candidate
 // launch executables (.exe/.bat/.com), shows a numbered picker on
 // stderr, prompts on stdin, and resolves the chosen path's components
-// to DOS 8.3 short names (renaming on disk as needed). Mirrors
-// select_launch_executable(). Returns (launchExe, launchSubdir).
-// launchSubdir is backslash-joined; both are empty if nothing was
-// chosen or no candidates exist.
+// to DOS 8.3 short names (renaming on disk as needed).
 func selectLaunchExecutable(gamedir string) (launchExe, launchSubdir string, err error) {
 	var candidates []string
 	err = filepath.Walk(gamedir, func(path string, info os.FileInfo, walkErr error) error {

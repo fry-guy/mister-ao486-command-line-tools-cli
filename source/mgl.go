@@ -13,7 +13,7 @@ var mglHDDExts = map[string]bool{".vhd": true}
 var mglCDExts = map[string]bool{".chd": true, ".iso": true, ".cue": true}
 var mglFloppyExts = map[string]bool{".img": true, ".ima": true, ".dsk": true, ".vfd": true, ".imz": true, ".flp": true}
 
-// cmdMGLCreate implements `aotools mgl create -dos|-win31 "Display
+// cmdMGLCreate implements `aotools create mgl -dos|-win31 "Display
 // Name" [source_folder]`, porting mkmgl in full.
 func cmdMGLCreate(args []string) {
 	if len(args) < 2 {
@@ -103,7 +103,7 @@ func cmdMGLCreate(args []string) {
 }
 
 func mglUsage() {
-	eprintln(`Usage: aotools mgl create -dos|-win31 "Display Name" [source_folder]`)
+	eprintln(`Usage: aotools create mgl -dos|-win31 "Display Name" [source_folder]`)
 	eprintln()
 	eprintln("  -dos          Place the .mgl in /media/fat/_DOS Games")
 	eprintln("  -win31        Place the .mgl in /media/fat/_Win 3.1 Games")

@@ -10,11 +10,6 @@ import (
 	"time"
 )
 
-// qemuController ports newgame_controller.py's QEMUController: boots
-// real MS-DOS 6.22 under QEMU (headless, serial console) from a
-// helper floppy that FORMATs C: and XCOPYs the DOS template folders
-// onto it, driving the process by watching the serial output for
-// known prompts and injecting keystrokes over QMP.
 type qemuController struct {
 	proc   *exec.Cmd
 	qmp    net.Conn
@@ -179,9 +174,6 @@ func (c *qemuController) sendString(text string) {
 	}
 }
 
-// waitFor accumulates a rolling text buffer (not discrete lines) and
-// checks for pattern matches, so prompts without a trailing newline
-// (e.g. "Proceed with Format (Y/N)?") are still detected.
 func (c *qemuController) waitFor(patterns []string, timeout time.Duration, window int) string {
 	deadline := time.Now().Add(timeout)
 	acc := ""
@@ -223,11 +215,6 @@ func (c *qemuController) shutdown() {
 	}
 }
 
-// runDOSInstall boots vhd (empty, freshly formatted+BPB-fixed) with
-// floppy (the automation floppy) and bootref (dos_template.vhd) under
-// QEMU, drives real DOS's FORMAT /S + XCOPY sequence to completion,
-// and returns whether it succeeded. Mirrors newgame_controller.py's
-// run().
 func runDOSInstall(vhd, floppy, bootref string) bool {
 	ctrl := &qemuController{}
 	if err := ctrl.start(vhd, floppy, bootref); err != nil {

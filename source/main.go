@@ -10,18 +10,24 @@
 //
 // Usage:
 //
-//	aotools vhd create [-dos|-win31] <name.vhd> [archive]
-//	aotools vhd resize <name.vhd>
-//	aotools mgl create -dos|-win31 "Display Name" [source_folder]
-//	aotools chd create <input.iso|.cue|.bin|.gdi> <output.chd>
-//	aotools ima create <name.ima> [source] [-s size]
+//	aotools create vhd [-dos|-win31] <name.vhd> [archive|folder]
+//	aotools resize vhd <name.vhd>
+//	aotools create mgl -dos|-win31 "Display Name" [source_folder]
+//	aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>
+//	aotools create diskimage <name.ima> [source] [-s size]
 //	aotools mount vhd <name.vhd>
 //	aotools umount vhd
 //	aotools mount chd <name.chd>
 //	aotools umount chd
+//	aotools mount diskimage <name.ima>
+//	aotools umount diskimage
 //	aotools install
 //	aotools uninstall
 //	aotools shellinit
+//
+// Every command follows a consistent <verb> <noun> order: create/
+// resize/mount/umount always come first, followed by what they act
+// on (vhd/mgl/chd/diskimage).
 //
 // `mount`/`umount` cd you into/out of the mounted volume automatically
 // -- but only once `aotools install` (or `eval "$(aotools shellinit)"`)
@@ -51,38 +57,30 @@ func main() {
 	}
 
 	switch os.Args[1] {
-	case "vhd":
+	case "create":
 		if len(os.Args) < 3 {
 			printTopUsage()
 			os.Exit(1)
 		}
 		switch os.Args[2] {
-		case "create":
+		case "vhd":
 			cmdVHDCreate(os.Args[3:])
-		case "resize":
-			cmdVHDResize(os.Args[3:])
+		case "mgl":
+			cmdMGLCreate(os.Args[3:])
+		case "chd":
+			cmdCHDCreate(os.Args[3:])
+		case "diskimage":
+			cmdIMACreate(os.Args[3:])
 		default:
 			printTopUsage()
 			os.Exit(1)
 		}
-	case "mgl":
-		if len(os.Args) < 3 || os.Args[2] != "create" {
+	case "resize":
+		if len(os.Args) < 3 || os.Args[2] != "vhd" {
 			printTopUsage()
 			os.Exit(1)
 		}
-		cmdMGLCreate(os.Args[3:])
-	case "chd":
-		if len(os.Args) < 3 || os.Args[2] != "create" {
-			printTopUsage()
-			os.Exit(1)
-		}
-		cmdCHDCreate(os.Args[3:])
-	case "ima":
-		if len(os.Args) < 3 || os.Args[2] != "create" {
-			printTopUsage()
-			os.Exit(1)
-		}
-		cmdIMACreate(os.Args[3:])
+		cmdVHDResize(os.Args[3:])
 	case "mount":
 		if len(os.Args) < 3 {
 			printTopUsage()
@@ -93,6 +91,8 @@ func main() {
 			cmdMountVHD(os.Args[3:])
 		case "chd":
 			cmdMountCHD(os.Args[3:])
+		case "diskimage":
+			cmdMountIMA(os.Args[3:])
 		default:
 			printTopUsage()
 			os.Exit(1)
@@ -107,6 +107,8 @@ func main() {
 			cmdUmountVHD()
 		case "chd":
 			cmdUmountCHD()
+		case "diskimage":
+			cmdUmountIMA()
 		default:
 			printTopUsage()
 			os.Exit(1)
@@ -135,15 +137,17 @@ func printTopUsage() {
 	eprintln(`aotools ` + version + ` - MiSTer ao486 DOS Toolkit (single-binary port)
 
 Usage:
-  aotools vhd create [-dos|-win31] <name.vhd> [archive]
-  aotools vhd resize <name.vhd>
-  aotools mgl create -dos|-win31 "Display Name" [source_folder]
-  aotools chd create <input.iso|.cue|.bin|.gdi> <output.chd>
-  aotools ima create <name.ima> [source] [-s size]
+  aotools create vhd [-dos|-win31] <name.vhd> [archive|folder]
+  aotools resize vhd <name.vhd>
+  aotools create mgl -dos|-win31 "Display Name" [source_folder]
+  aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>
+  aotools create diskimage <name.ima> [source] [-s size]
   aotools mount vhd <name.vhd>
   aotools umount vhd
   aotools mount chd <name.chd>
   aotools umount chd
+  aotools mount diskimage <name.ima>
+  aotools umount diskimage
   aotools install
   aotools uninstall
   aotools shellinit

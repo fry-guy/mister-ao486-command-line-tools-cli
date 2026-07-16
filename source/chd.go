@@ -8,11 +8,11 @@ import (
 	"strings"
 )
 
-// cmdCHDCreate implements `aotools chd create <input> <output.chd>`,
+// cmdCHDCreate implements `aotools create chd <input> <output.chd>`,
 // porting mkchd in full.
 func cmdCHDCreate(args []string) {
 	if len(args) < 2 {
-		eprintln("Usage: aotools chd create <input.iso|.cue|.bin|.gdi> <output.chd>")
+		eprintln("Usage: aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>")
 		os.Exit(1)
 	}
 	input, output := args[0], args[1]

@@ -31,6 +31,7 @@ const (
 	vhdMountPoint    = "/tmp/vhd_mount"
 	chdExtractDir    = linuxDir + "/.mountchd_extract"
 	chdMountPoint    = linuxDir + "/.mountchd_mount"
+	imaMountPoint    = "/tmp/ima_mount"
 
 	qmpSock = "/tmp/ao486-qmp.sock"
 

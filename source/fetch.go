@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -93,65 +94,91 @@ func downloadFile(url, dest string, executable bool) error {
 	return nil
 }
 
+// sttyRun runs `stty` with the given args against the real controlling
+// terminal (cmd.Stdin is explicitly wired to os.Stdin, since os/exec
+// otherwise gives the child no stdin at all, which would make `stty`
+// fail immediately). Used to save/restore terminal settings around
+// waitEnterOrEsc's raw single-keypress read.
+func sttyRun(args ...string) (string, error) {
+	cmd := exec.Command("stty", args...)
+	cmd.Stdin = os.Stdin
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// waitEnterOrEsc waits for a single keypress: Enter proceeds (true),
+// Esc cancels (false), anything else is ignored and it keeps waiting.
+// Requires putting the terminal into raw mode (via `stty`) so a
+// single keypress is delivered immediately instead of waiting for a
+// newline -- settings are always restored afterward.
+//
+// Falls back to a plain line read (empty line proceeds, anything else
+// cancels) when stdin isn't a real terminal -- e.g. scripted/piped
+// input -- since raw mode has nothing to operate on in that case.
+func waitEnterOrEsc() bool {
+	saved, err := sttyRun("-g")
+	if err != nil || saved == "" {
+		line := promptLine("")
+		return strings.TrimSpace(line) == ""
+	}
+	if _, err := sttyRun("raw", "-echo"); err != nil {
+		line := promptLine("")
+		return strings.TrimSpace(line) == ""
+	}
+	defer sttyRun(saved)
+
+	buf := make([]byte, 1)
+	for {
+		n, err := os.Stdin.Read(buf)
+		if err != nil || n == 0 {
+			return false // EOF/error -- treat as cancel
+		}
+		switch buf[0] {
+		case '\r', '\n':
+			return true
+		case 27: // Esc
+			return false
+		}
+		// any other key: ignore, keep waiting
+	}
+}
+
 // offerFetchMissing is the download half of `aotools install`. It
 // only ever runs after checkDependenciesDetailed has already shown
-// the user exactly what's missing and why aotools can't bundle it
-// itself -- this is strictly an opt-in convenience on top of that,
-// never a silent background action, and never offered from `aotools
-// doctor` (which stays purely read-only).
+// the user exactly what's missing -- this is strictly an opt-in
+// convenience on top of that, never a silent background action, and
+// never offered from `aotools doctor` (which stays purely read-only).
 //
 // Community installers for MiSTer (update_all.sh and others) use
 // this same pattern for content they don't have the right to bundle:
-// ask, show exactly what's being fetched and from where, require an
-// explicit acknowledgment that it's someone else's copyrighted work,
-// then fetch only on confirmation.
+// ask, then require a clear acknowledgment that it's someone else's
+// copyrighted work, then fetch only on confirmation.
 func offerFetchMissing(missing []depCheck, qemuBiosMissing bool) {
 	if len(missing) == 0 && !qemuBiosMissing {
 		return
 	}
 
-	eprintln("Some of the missing items above have known community-hosted copies")
-	eprintln("aotools can download for you:")
-	eprintln()
-	for _, m := range missing {
-		eprintf("  - %s\n", m.label)
-	}
-	if qemuBiosMissing {
-		eprintln("  - qemu BIOS directory (42 files)")
-	}
-	eprintln()
+	eprintln("aotools is currently installed but lacks some key functionalities due to missing assets. The items marked MISSING cannot be packaged in aotools directly because they are separate packages with their own licensing or contain copyrighted material. This installer can instead download these resources from known community-hosted copies.")
 	answer := promptLine("Download the missing item(s) now? [y/N]: ")
 	if !strings.EqualFold(answer, "y") {
 		eprintln("Skipped. Run `aotools install` again any time to retry.")
 		return
 	}
 
-	eprintln()
 	eprintln("=======================================================")
-	eprintln("IMPORTANT -- read before continuing")
+	eprintln("IMPORTANT - PLEASE REVIEW BEFORE PROCEEDING")
 	eprintln("=======================================================")
-	eprintln("The files below are NOT part of aotools and are not created,")
-	eprintln("hosted, or owned by aotools or its authors. They remain the")
-	eprintln("copyrighted property of their respective creators/publishers:")
-	eprintln()
-	eprintln("  - mtools, chdman, qemu-system-i386, qemu-bios/*: community-built")
-	eprintln("    binaries hosted at")
-	eprintln("    github.com/fry-guy/mister-ao486-command-line-tools-cli")
-	eprintln("  - disk1.img, dos_template.vhd, win31_template.vhd: contain real")
-	eprintln("    Microsoft MS-DOS/Windows 3.1 system files, hosted on archive.org")
-	eprintln()
 	eprintln("By continuing, you acknowledge these are third-party files subject")
 	eprintln("to their own licenses/copyright, downloaded at your own request and")
 	eprintln("placed on your own device -- aotools is only automating the fetch,")
-	eprintln("the same way community installers like update_all.sh do for content")
+	eprintln("the same as other community installers such as update_all.sh do for content")
 	eprintln("they don't have the right to bundle themselves.")
-	eprintln()
-	ack := promptLine(`Type "I agree" to continue, or anything else to cancel: `)
-	if !strings.EqualFold(strings.TrimSpace(ack), "i agree") {
+	eprintln("Please select Enter to continue, or esc to cancel.")
+
+	if !waitEnterOrEsc() {
 		eprintln("Cancelled. Nothing was downloaded.")
 		return
 	}
-	eprintln()
 
 	for _, m := range missing {
 		eprintf("Downloading %s ...\n", m.label)
@@ -187,8 +214,6 @@ func offerFetchMissing(missing []depCheck, qemuBiosMissing bool) {
 		}
 	}
 
-	eprintln()
 	eprintln("Done. Re-checking...")
-	eprintln()
 	checkDependencies()
 }

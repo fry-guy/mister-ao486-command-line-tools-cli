@@ -12,9 +12,6 @@ import (
 	"strings"
 )
 
-// archiveKind classifies a supported archive by filename, matching
-// the *.[Zz][Ii][Pp] style case-insensitive globs used throughout the
-// original bash scripts.
 type archiveKind int
 
 const (
@@ -45,8 +42,6 @@ func isSupportedArchive(path string) bool {
 	return classifyArchive(path) != archUnsupported
 }
 
-// extractArchive extracts a supported archive (.zip, .tar,
-// .tar.gz/.tgz, .tar.bz2/.tbz2) into dest. Mirrors extract_archive().
 func extractArchive(archivePath, dest string) error {
 	switch classifyArchive(archivePath) {
 	case archZip:
@@ -151,9 +146,6 @@ func extractTar(archivePath, dest, comp string) error {
 	return nil
 }
 
-// archiveUncompressedSize estimates the uncompressed byte size of a
-// supported archive's contents from its own metadata (no extraction).
-// Mirrors archive_uncompressed_size().
 func archiveUncompressedSize(archivePath string) int64 {
 	switch classifyArchive(archivePath) {
 	case archZip:
@@ -213,10 +205,6 @@ func tarUncompressedSize(archivePath, comp string) int64 {
 	return total
 }
 
-// flattenWrapperDirs collapses redundant single-subdirectory wrapper
-// levels (e.g. Dragonflight/Dragonflight/*), up to 5 levels deep,
-// moving the innermost level's contents up to dest. Mirrors
-// flatten_wrapper_dirs().
 func flattenWrapperDirs(dest string) error {
 	cur := dest
 	for i := 0; i < 5; i++ {
@@ -259,17 +247,6 @@ func flattenWrapperDirs(dest string) error {
 	return os.Rename(staging, dest)
 }
 
-// zipAttrManifest replicates mkvhd/mkvhd(-win31)'s inline python zip
-// attribute scanner: for a .zip archive that genuinely originated on
-// an MS-DOS/FAT host (creator system 0), captures each file's DOS
-// attribute byte, keyed by its path with the same redundant wrapper
-// prefix flattenWrapperDirs would strip already removed, so the keys
-// line up with post-extraction, post-flatten paths. Archives zipped
-// on Unix/macOS/Windows tooling (the vast majority of abandonware
-// downloads) carry that OS's own permission bits in the same field
-// instead -- reinterpreting those as DOS attributes previously made
-// ordinary files show up Hidden+System. Only .zip has this concept;
-// .tar has no DOS-attribute metadata to lose.
 func zipAttrManifest(archivePath string) (map[string]byte, error) {
 	r, err := zip.OpenReader(archivePath)
 	if err != nil {
@@ -305,10 +282,6 @@ func zipAttrManifest(archivePath string) (map[string]byte, error) {
 	return manifest, nil
 }
 
-// detectZipWrapperPrefix mirrors the python prefix-detection loop:
-// repeatedly find the sole top-level path component shared by every
-// remaining name, up to 5 levels, stopping as soon as a level isn't
-// unanimous or there's nothing left underneath it.
 func detectZipWrapperPrefix(names []string) string {
 	var prefixParts []string
 	cur := names
@@ -342,9 +315,6 @@ func detectZipWrapperPrefix(names []string) string {
 	return strings.Join(prefixParts, "/")
 }
 
-// dirSizeBytes sums the apparent size of every regular file under
-// root (equivalent to `du -sb`, used for template/staging size
-// measurements).
 func dirSizeBytes(root string) int64 {
 	var total int64
 	_ = filepath.Walk(root, func(_ string, info os.FileInfo, err error) error {

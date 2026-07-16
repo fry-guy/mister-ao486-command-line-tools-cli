@@ -10,7 +10,6 @@ import (
 	"time"
 )
 
-// findFreeLoop returns the next free loop device, as `losetup -f`.
 func findFreeLoop() (string, error) {
 	out, err := runCapture("losetup", "-f")
 	if err != nil {
@@ -19,12 +18,6 @@ func findFreeLoop() (string, error) {
 	return strings.TrimSpace(out), nil
 }
 
-// loopAttach attaches file to loop at the given byte offset, retrying
-// up to 5 times with a 1s pause: losetup can transiently fail with
-// "Resource temporarily unavailable" right after a previous loop
-// device (especially one whose backing file had a partition table,
-// triggering a kernel auto partition-scan of a loopNpM sub-device) is
-// torn down. Mirrors loop_attach().
 func loopAttach(loop, file string, offsetBytes int64) error {
 	var lastErr error
 	for attempt := 0; attempt < 5; attempt++ {
@@ -35,8 +28,6 @@ func loopAttach(loop, file string, offsetBytes int64) error {
 		}
 		sleep(1)
 	}
-	// Final attempt without suppressing the error, so a genuine
-	// failure still surfaces a real message.
 	cmd := exec.Command("losetup", "-o", strconv.FormatInt(offsetBytes, 10), loop, file)
 	out, err := cmd.CombinedOutput()
 	if err != nil {
@@ -54,14 +45,6 @@ func loopDetach(loop string) {
 	}
 }
 
-// loopCopyIn mounts vhd (loop, offset offsetBytes) read-write, copies
-// sources into mnt/destSubpath (or mnt root if destSubpath is empty)
-// via `cp -r`, then unmounts. Used for any bulk copy of real archive
-// content: mtools' recursive mcopy -s was found to silently drop
-// files/subdirectories on real, large archives, confirmed directly;
-// the kernel loop-mount + cp path gave byte-for-byte perfect results
-// every time. Needs root, same as mkfs.vfat already does. Mirrors
-// loop_copy_in().
 func loopCopyIn(vhd string, offsetBytes int64, destSubpath string, sources []string, showProgressHint bool) error {
 	loop, err := findFreeLoop()
 	if err != nil {
@@ -91,9 +74,6 @@ func loopCopyIn(vhd string, offsetBytes int64, destSubpath string, sources []str
 		}
 	}
 
-	// Count files up front so large copies (archive injections can be
-	// 1000+ files, a couple of minutes) show progress instead of
-	// sitting silent.
 	totalFiles := 0
 	if showProgressHint {
 		for _, src := range sources {

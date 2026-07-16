@@ -59,6 +59,51 @@ func cmdUmountVHD() {
 	_ = os.Remove(vhdMountPoint)
 }
 
+// cmdMountIMA implements `aotools mount diskimage <name.ima>`. Unlike
+// VHDs, .ima floppy images are raw "superfloppy" images with no
+// partition table (cmdIMACreate formats them directly with
+// `mkfs.vfat -I`), so this is a plain loop mount with no partition
+// offset needed.
+func cmdMountIMA(args []string) {
+	if len(args) == 0 {
+		eprintln("Usage: aotools mount diskimage <name.ima>")
+		os.Exit(1)
+	}
+	ima, err := filepath.Abs(args[0])
+	if err != nil {
+		fatal("%v", err)
+	}
+	if !fileExists(ima) {
+		fatal("file not found: %s", ima)
+	}
+	if isMounted(imaMountPoint) {
+		fatal("%s is already mounted. Run 'aotools umount diskimage' first.", imaMountPoint)
+	}
+
+	if err := os.MkdirAll(imaMountPoint, 0755); err != nil {
+		fatal("%v", err)
+	}
+	if err := runQuiet("mount", "-o", "loop", ima, imaMountPoint); err != nil {
+		fatal("failed to mount %s", ima)
+	}
+	eprintf("Mounted %s at %s\n", ima, imaMountPoint)
+	eprintln("Run 'aotools umount diskimage' when done to unmount and clean up.")
+	fmt.Println(imaMountPoint)
+}
+
+// cmdUmountIMA implements `aotools umount diskimage`.
+func cmdUmountIMA() {
+	if isMounted(imaMountPoint) {
+		if err := runQuiet("umount", imaMountPoint); err != nil {
+			fatal("failed to unmount %s", imaMountPoint)
+		}
+		eprintf("Unmounted %s.\n", imaMountPoint)
+	} else {
+		eprintf("Nothing mounted at %s.\n", imaMountPoint)
+	}
+	_ = os.Remove(imaMountPoint)
+}
+
 // cmdMountCHD implements `aotools mount chd <name.chd>`, extracting
 // the disc with chdman, detecting the sector format, stripping raw-
 // sector wrappers if needed to produce a mountable ISO, then mounting

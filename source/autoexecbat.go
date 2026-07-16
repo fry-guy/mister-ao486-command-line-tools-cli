@@ -2,11 +2,6 @@ package main
 
 import "strings"
 
-// qemuAutoexecBatLines is qemu_autoexec.bat, embedded so the whole
-// toolkit is a single binary. Runs inside the QEMU-booted real DOS
-// 6.22 floppy to FORMAT C: /S and lay down the DOS/MISTER/DRIVERS/
-// UTIL folders + AUTOEXEC.BAT/CONFIG.SYS that every -dos VHD needs.
-// A: = boot floppy (DOS 6.22), C: = new VHD, D: = dos_template.vhd.
 var qemuAutoexecBatLines = []string{
 	"@ECHO OFF",
 	"REM ao486 VHD Auto-Setup - runs inside QEMU",
@@ -71,8 +66,6 @@ var qemuAutoexecBatLines = []string{
 	"",
 }
 
-// qemuAutoexecBat returns the file content with DOS-style CRLF line
-// endings, as the original qemu_autoexec.bat had.
 func qemuAutoexecBat() string {
 	return strings.Join(qemuAutoexecBatLines, "\r\n")
 }

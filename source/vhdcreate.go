@@ -141,8 +141,8 @@ func prepareAutomationFloppy() error {
 	return mcopyPut(helperImg, []string{configTmp.Name()}, "CONFIG.SYS")
 }
 
-// cmdVHDCreate implements `aotools vhd create [-dos|-win31]
-// <name.vhd> [archive]`, porting mkvhd in full.
+// cmdVHDCreate implements `aotools create vhd [-dos|-win31]
+// <name.vhd> [archive|folder]`, porting mkvhd in full.
 func cmdVHDCreate(args []string) {
 	newgame := false
 	win31 := false
@@ -156,11 +156,11 @@ func cmdVHDCreate(args []string) {
 
 	if len(args) == 0 {
 		eprintln("Usage:")
-		eprintln("  aotools vhd create <name.vhd>                       create a blank VHD")
-		eprintln("  aotools vhd create -dos <name.vhd>                  create + auto-format with DOS")
-		eprintln("  aotools vhd create -dos <name.vhd> <archive>        also inject <archive>")
-		eprintln("  aotools vhd create -win31 <name.vhd>                create + install Windows 3.1")
-		eprintln("  aotools vhd create -win31 <name.vhd> <archive>      also inject <archive>")
+		eprintln("  aotools create vhd <name.vhd>                          create a blank VHD")
+		eprintln("  aotools create vhd -dos <name.vhd>                     create + auto-format with DOS")
+		eprintln("  aotools create vhd -dos <name.vhd> <archive|folder>    also inject <archive|folder>")
+		eprintln("  aotools create vhd -win31 <name.vhd>                   create + install Windows 3.1")
+		eprintln("  aotools create vhd -win31 <name.vhd> <archive|folder>  also inject <archive|folder>")
 		os.Exit(1)
 	}
 
@@ -191,10 +191,10 @@ func cmdVHDCreate(args []string) {
 			fatal("an archive argument requires -dos.")
 		}
 		if !fileExists(archive) {
-			fatal("archive not found: %s", archive)
+			fatal("archive or folder not found: %s", archive)
 		}
-		if !isSupportedArchive(archive) {
-			fatal("unsupported archive type: %s\nSupported: .zip, .tar, .tar.gz/.tgz, .tar.bz2/.tbz2", archive)
+		if !isDir(archive) && !isSupportedArchive(archive) {
+			fatal("unsupported source: %s\nSupported: .zip, .tar, .tar.gz/.tgz, .tar.bz2/.tbz2, or a folder", archive)
 		}
 	}
 
@@ -202,7 +202,11 @@ func cmdVHDCreate(args []string) {
 	var archiveBytes int64
 	if archive != "" {
 		eprintln("Calculating suggested VHD size...")
-		archiveBytes = archiveUncompressedSize(archive)
+		if isDir(archive) {
+			archiveBytes = dirSizeBytes(archive)
+		} else {
+			archiveBytes = archiveUncompressedSize(archive)
+		}
 		dosBytes := dosOverheadBytes()
 		headroom := archiveBytes / 4
 		if headroom < 102400 {
@@ -330,10 +334,11 @@ func cmdVHDCreate(args []string) {
 	eprintln("=======================================================")
 }
 
-// injectDOSArchive extracts archive into its own game folder on
-// outPath (already a working -dos VHD), lets the user pick a launch
-// executable, and appends the CD/launch lines to AUTOEXEC.BAT.
-// Mirrors the archive-injection block at the end of mkvhd -dos.
+// injectDOSArchive copies archive (an archive file, or a plain
+// folder) into its own game folder on outPath (already a working
+// -dos VHD), lets the user pick a launch executable, and appends the
+// CD/launch lines to AUTOEXEC.BAT. Mirrors the archive-injection
+// block at the end of mkvhd -dos.
 func injectDOSArchive(outPath, archive string) {
 	gameName := dosShortName(archive)
 	eprintln()
@@ -350,7 +355,12 @@ func injectDOSArchive(outPath, archive string) {
 		eprintf("Error: %v\n", err)
 		return
 	}
-	if err := extractArchive(archive, gameDir); err != nil {
+	if isDir(archive) {
+		if err := copyDirTree(archive, gameDir); err != nil {
+			eprintf("Error: %v\n", err)
+			return
+		}
+	} else if err := extractArchive(archive, gameDir); err != nil {
 		eprintf("Error: %v\n", err)
 		return
 	}
@@ -402,15 +412,17 @@ func injectDOSArchive(outPath, archive string) {
 		eprintf("                           %s\n", launchExe)
 	}
 
-	eprintln()
-	eprintln("Source archive that can now be removed:")
-	eprintf("  %s\n", archive)
-	answer := promptLine("Delete the original source archive? [y/N]: ")
-	if answer == "y" || answer == "Y" {
-		os.Remove(archive)
-		eprintln("Deleted.")
-	} else {
-		eprintln("Keeping source archive.")
+	if !isDir(archive) {
+		eprintln()
+		eprintln("Source archive that can now be removed:")
+		eprintf("  %s\n", archive)
+		answer := promptLine("Delete the original source archive? [y/N]: ")
+		if answer == "y" || answer == "Y" {
+			os.Remove(archive)
+			eprintln("Deleted.")
+		} else {
+			eprintln("Keeping source archive.")
+		}
 	}
 }
 
@@ -429,10 +441,10 @@ func createWin31VHD(outPath, archive string) {
 	}
 	if archive != "" {
 		if !fileExists(archive) {
-			fatal("archive not found: %s", archive)
+			fatal("archive or folder not found: %s", archive)
 		}
-		if !isSupportedArchive(archive) {
-			fatal("unsupported archive type: %s", archive)
+		if !isDir(archive) && !isSupportedArchive(archive) {
+			fatal("unsupported source: %s\nSupported: .zip, .tar, .tar.gz/.tgz, .tar.bz2/.tbz2, or a folder", archive)
 		}
 	}
 
@@ -458,7 +470,11 @@ func createWin31VHD(outPath, archive string) {
 	templateBytes := dirSizeBytes(stageDir)
 	var archiveBytes int64
 	if archive != "" {
-		archiveBytes = archiveUncompressedSize(archive)
+		if isDir(archive) {
+			archiveBytes = dirSizeBytes(archive)
+		} else {
+			archiveBytes = archiveUncompressedSize(archive)
+		}
 	}
 	actualBytes := templateBytes + archiveBytes
 	headroom := actualBytes / 4
@@ -564,7 +580,11 @@ func createWin31VHD(outPath, archive string) {
 		if err == nil {
 			gameDir := filepath.Join(gameStage, gameName)
 			_ = os.MkdirAll(gameDir, 0755)
-			_ = extractArchive(archive, gameDir)
+			if isDir(archive) {
+				_ = copyDirTree(archive, gameDir)
+			} else {
+				_ = extractArchive(archive, gameDir)
+			}
 			_ = flattenWrapperDirs(gameDir)
 			launchExe, launchSubdir, _ := selectLaunchExecutable(gameDir)
 
@@ -615,15 +635,17 @@ func createWin31VHD(outPath, archive string) {
 			os.RemoveAll(gameStage)
 		}
 
-		eprintln()
-		eprintln("Source archive that can now be removed:")
-		eprintf("  %s\n", archive)
-		answer := promptLine("Delete the original source archive? [y/N]: ")
-		if answer == "y" || answer == "Y" {
-			os.Remove(archive)
-			eprintln("Deleted.")
-		} else {
-			eprintln("Keeping source archive.")
+		if !isDir(archive) {
+			eprintln()
+			eprintln("Source archive that can now be removed:")
+			eprintf("  %s\n", archive)
+			answer := promptLine("Delete the original source archive? [y/N]: ")
+			if answer == "y" || answer == "Y" {
+				os.Remove(archive)
+				eprintln("Deleted.")
+			} else {
+				eprintln("Keeping source archive.")
+			}
 		}
 	}
 

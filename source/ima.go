@@ -1,8 +1,10 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -23,15 +25,72 @@ func imaSizeToBytes(spec string) (int64, bool) {
 	}
 }
 
-// cmdIMACreate implements `aotools ima create <name.ima> [source]
-// [-s size]`, porting mkima in full.
+type diskimageSize struct {
+	label string
+	bytes int64
+}
+
+var diskimageSizes = []diskimageSize{
+	{"360k", 368640},
+	{"720k", 737280},
+	{"1.2m", 1228800},
+	{"1.44m", 1474560},
+	{"2.88m", 2949120},
+}
+
+const diskimageDefaultIdx = 3 // 1.44m
+
+// promptDiskimageSize shows a numbered list of the standard floppy
+// sizes and returns the chosen size in bytes. sourceBytes is the size
+// of the content to be injected (0 if none), used to flag a
+// recommended size that fits it. Blank input selects the default,
+// 1.44MB. A raw size string (e.g. "2.88m") is also accepted directly.
+func promptDiskimageSize(source string, sourceBytes int64) int64 {
+	recommended := -1
+	if source != "" {
+		for i, s := range diskimageSizes {
+			if sourceBytes <= s.bytes*95/100 {
+				recommended = i
+				break
+			}
+		}
+	}
+
+	eprintln()
+	eprintln("Select a floppy image size:")
+	for i, s := range diskimageSizes {
+		suffix := ""
+		if i == diskimageDefaultIdx {
+			suffix += " (default)"
+		}
+		if i == recommended {
+			suffix += " (recommended for source)"
+		}
+		eprintf("  %d. %s%s\n", i+1, s.label, suffix)
+	}
+	answer := promptLine(fmt.Sprintf("Choice [%d]: ", diskimageDefaultIdx+1))
+	if answer == "" {
+		return diskimageSizes[diskimageDefaultIdx].bytes
+	}
+	if n, err := strconv.Atoi(answer); err == nil && n >= 1 && n <= len(diskimageSizes) {
+		return diskimageSizes[n-1].bytes
+	}
+	if b, ok := imaSizeToBytes(answer); ok {
+		return b
+	}
+	fatal("unrecognized size '%s'. Enter a number 1-%d or a size like 1.44m.", answer, len(diskimageSizes))
+	return 0
+}
+
+// cmdIMACreate implements `aotools create diskimage <name.ima>
+// [source] [-s size]`, porting mkima in full.
 func cmdIMACreate(args []string) {
 	if len(args) == 0 {
 		eprintln("Usage:")
-		eprintln("  aotools ima create <name.ima>                      blank formatted floppy (1.44MB default)")
-		eprintln("  aotools ima create <name.ima> -s <size>            blank formatted floppy of a given size")
-		eprintln("  aotools ima create <name.ima> <source>             inject a directory or archive")
-		eprintln("  aotools ima create <name.ima> <source> -s <size>   same, with an explicit size")
+		eprintln("  aotools create diskimage <name.ima>                      blank formatted floppy (prompts for size)")
+		eprintln("  aotools create diskimage <name.ima> -s <size>            blank formatted floppy of a given size")
+		eprintln("  aotools create diskimage <name.ima> <source>             inject a directory or archive")
+		eprintln("  aotools create diskimage <name.ima> <source> -s <size>   same, with an explicit size")
 		eprintln()
 		eprintln("Sizes: 360k, 720k, 1.2m, 1.44m (default), 2.88m")
 		os.Exit(1)
@@ -73,6 +132,18 @@ func cmdIMACreate(args []string) {
 		fatal("source not found: %s", source)
 	}
 
+	// source can be either a folder or an archive (.zip/.tar/.tar.gz/
+	// .tar.bz2, per archext.go) -- both are already fully supported
+	// by isDir/extractArchive below.
+	var sourceBytes int64
+	if source != "" {
+		if isDir(source) {
+			sourceBytes = dirSizeBytes(source)
+		} else {
+			sourceBytes = archiveUncompressedSize(source)
+		}
+	}
+
 	var sizeBytes int64
 	if sizeSpec != "" {
 		b, ok := imaSizeToBytes(sizeSpec)
@@ -82,29 +153,12 @@ func cmdIMACreate(args []string) {
 			os.Exit(1)
 		}
 		sizeBytes = b
-	} else if source != "" {
-		var sourceBytes int64
-		if isDir(source) {
-			sourceBytes = dirSizeBytes(source)
-		} else {
-			sourceBytes = archiveUncompressedSize(source)
-		}
-		found := false
-		for _, candidate := range []int64{368640, 737280, 1228800, 1474560, 2949120} {
-			// ~5% headroom for filesystem overhead.
-			if sourceBytes <= candidate*95/100 {
-				sizeBytes = candidate
-				found = true
-				break
-			}
-		}
-		if !found {
-			eprintf("Error: source (%d bytes) is too large for any\n", sourceBytes)
-			eprintln("standard floppy size (max 2.88MB / 2,949,120 bytes).")
-			os.Exit(1)
-		}
 	} else {
-		sizeBytes = 1474560
+		sizeBytes = promptDiskimageSize(source, sourceBytes)
+	}
+
+	if source != "" && sourceBytes > sizeBytes*95/100 {
+		fatal("source (%d bytes) is too large for a %dKB floppy image.", sourceBytes, sizeBytes/1024)
 	}
 
 	eprintf("Creating %dKB floppy image...\n", sizeBytes/1024)

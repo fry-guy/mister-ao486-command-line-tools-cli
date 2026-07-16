@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"strings"
 	"time"
 )
@@ -146,6 +147,32 @@ func walkFiles(root string, fn func(path string)) error {
 		}
 	}
 	return nil
+}
+
+// copyDirTree recursively copies every file and subdirectory from src
+// into dst (creating dst and any needed subdirectories), preserving
+// relative structure. Used when a create vhd/mgl/diskimage source is
+// a plain folder rather than an archive -- extractArchive only knows
+// how to unpack .zip/.tar/etc, so folder sources are copied directly
+// instead of routed through it.
+func copyDirTree(src, dst string) error {
+	return filepath.Walk(src, func(path string, info os.FileInfo, err error) error {
+		if err != nil {
+			return err
+		}
+		rel, rerr := filepath.Rel(src, path)
+		if rerr != nil {
+			return rerr
+		}
+		target := filepath.Join(dst, rel)
+		if info.IsDir() {
+			return os.MkdirAll(target, 0755)
+		}
+		if err := os.MkdirAll(filepath.Dir(target), 0755); err != nil {
+			return err
+		}
+		return copyFile(path, target)
+	})
 }
 
 func copyFile(src, dst string) error {

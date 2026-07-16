@@ -12,7 +12,7 @@ import (
 	"strings"
 )
 
-// cmdVHDResize implements `aotools vhd resize <name.vhd>`, porting
+// cmdVHDResize implements `aotools resize vhd <name.vhd>`, porting
 // resizevhd in full: reads the whole existing VHD into staging,
 // builds a fresh correctly-sized container, preserves the source's
 // own boot sector code and DOS attribute bytes, copies everything
@@ -20,7 +20,7 @@ import (
 // original (or keeps it as a timestamped backup).
 func cmdVHDResize(args []string) {
 	if len(args) == 0 {
-		eprintln("Usage: aotools vhd resize <name.vhd>")
+		eprintln("Usage: aotools resize vhd <name.vhd>")
 		os.Exit(1)
 	}
 	source := args[0]

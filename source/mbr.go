@@ -169,10 +169,7 @@ func readBootSector(path string, partStartSec int64) ([]byte, error) {
 // sourceBoot (bytes 0-10: jump + OEM name, bytes 62-511: boot code +
 // embedded strings + 0x55AA signature) while keeping the freshly
 // written BPB fields (bytes 11-61) already present at the
-// destination's partition offset. Real MS-DOS boot code is tightly
-// paired with the specific IO.SYS/MSDOS.SYS it shipped with -- writing
-// a fresh boot sector via a different DOS version produces a VHD that
-// looks structurally valid but hangs on real ao486 hardware.
+// destination's partition offset.
 func writeBootSectorMerge(destPath string, partStartSec int64, sourceBoot []byte) error {
 	if len(sourceBoot) != 512 {
 		return fmt.Errorf("source boot sector is not 512 bytes")
@@ -199,10 +196,7 @@ func writeBootSectorMerge(destPath string, partStartSec int64, sourceBoot []byte
 // readFatAttrManifest scans the root directory of the FAT volume at
 // partition offset partStartSec (in 512-byte sectors) and returns a
 // map of short filename ("NAME.EXT") -> DOS attribute byte, for every
-// entry that has at least one of read-only/hidden/system set. Skips
-// long-filename (0x0F) and subdirectory (0x10) entries. Mirrors the
-// inline python struct-parsing snippet duplicated across resizevhd
-// and mkvhd -win31.
+// entry that has at least one of read-only/hidden/system set.
 func readFatAttrManifest(path string, partStartSec int64) (map[string]byte, error) {
 	boot, err := readBootSector(path, partStartSec)
 	if err != nil {
