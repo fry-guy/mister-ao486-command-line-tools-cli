@@ -33,7 +33,7 @@ Only steps 1–2 touch the filesystem outside `user-startup.sh` and `/etc/profil
 
 Several key functionalities of `aotools` rely on external programs and data files. None are bundled: `qemu-system-i386`, `chdman`, and `mtools` are separately licensed programs; the VHD templates and boot floppy contain copyrighted Microsoft system files that cannot be redistributed.
 
-Worth noting: all three binaries below are not generic off-the-shelf builds. Each was specifically cross-compiled (or, for `mtools`, built and verified from scratch) for MiSTer's ARM target as part of this project's own development — including real bugs found and fixed along the way, like a SIGBUS crash in `chdman` traced to a stale build artifact, and an `iconv`/codepage bug in `mtools` traced to a known glibc limitation in static binaries. See `NOTES.md` for the full build history.
+All three binaries below are not generic off-the-shelf builds, however. Each was specifically cross-compiled (or, for `mtools`, built and verified from scratch) for MiSTer's ARM target as part of this project's own development — including real bugs found and fixed along the way, like a SIGBUS crash in `chdman` traced to a stale build artifact, and an `iconv`/codepage bug in `mtools` traced to a known glibc limitation in static binaries. See `NOTES.md` for the full build history.
 
 `aotools install` can instead download all of them from known community-hosted sources, the same way installers such as `update_all.sh` handle content they cannot bundle themselves. It asks first, then requires pressing Enter to proceed or Esc to cancel before downloading.
 
