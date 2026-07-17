@@ -195,7 +195,17 @@ func cmdIMACreate(args []string) {
 			for _, e := range entries {
 				items = append(items, filepath.Join(stageDir, e.Name()))
 			}
-			if err := mcopyPutRecursive(outPath, items, ""); err != nil {
+			// loopCopyIn (kernel loop-mount + cp -r), not mcopyPutRecursive --
+			// mcopy -s was proven unreliable on large real-world bulk copies
+			// (silently drops files/subdirectories, false "No space left on
+			// device" errors -- see NOTES.md). Floppy archives are capped at
+			// 2.88MB so this was never exercised at the scale that exposed
+			// the bug, but there's no reason to leave the one remaining
+			// bulk-write path on mtools when every equivalent VHD-side path
+			// (resize vhd, create vhd -win31, create vhd -dos) has already
+			// been converted. Offset 0, no dest subpath: .ima files are raw
+			// superfloppy images with no partition table, unlike VHDs.
+			if err := loopCopyIn(outPath, 0, "", items, true); err != nil {
 				if stageIsTemp {
 					os.RemoveAll(stageDir)
 				}
