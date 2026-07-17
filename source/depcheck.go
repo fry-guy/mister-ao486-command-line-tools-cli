@@ -62,12 +62,16 @@ var pathDeps = []string{"mkfs.vfat", "mount", "losetup", "unix2dos"}
 // depends on but doesn't (and, for licensing and size reasons,
 // shouldn't) bundle itself:
 //
-//   - qemu-system-i386, chdman, and mtools are third-party
-//     pre-compiled binaries that any working install of the
-//     *original* ao486 DOS Toolkit already required, before aotools
-//     existed. aotools didn't add this dependency; it just automated
-//     driving them. Embedding a redistributed copy of any of these in
-//     this binary would both bloat it hugely and raise licensing
+//   - qemu-system-i386, chdman, and mtools are dependencies any
+//     working install of the *original* ao486 DOS Toolkit already
+//     required, before aotools existed -- aotools didn't add this
+//     dependency, it just automated driving them. All three are
+//     purpose-built for this toolkit rather than generic upstream
+//     binaries: qemu-system-i386 and chdman were cross-compiled from
+//     source for MiSTer's ARM target, and mtools was built and
+//     verified from scratch the same way. See NOTES.md for the full
+//     build history. Embedding a redistributed copy of any of these
+//     in this binary would both bloat it hugely and raise licensing
 //     questions that are someone else's to answer, not this
 //     project's.
 //   - dos_template.vhd/win31_template.vhd/disk1.img are DOS/Windows
