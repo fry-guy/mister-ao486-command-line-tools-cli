@@ -147,7 +147,7 @@ qemu-system-i386  -> https://raw.githubusercontent.com/fry-guy/mister-ao486-comm
 qemu-bios/*       -> same repo's qemu-bios/ directory (ships alongside qemu-system-i386, not a separate build)
 ```
 
-This repository most likely mirrors the exact binaries built during this project's own development, published for the wider MiSTer community rather than requiring everyone to repeat the cross-compile work. `depcheck.go`'s own comment describes all three as generic "third-party pre-compiled binaries" — accurate in that aotools itself never builds or bundles them, but it understates that each one was purpose-built for this toolkit.
+This repository is where these binaries were published after being built during this project's own development, for the wider MiSTer community to use directly rather than everyone repeating the cross-compile work. `depcheck.go`'s own comment reflects this directly rather than describing them as generic pre-compiled binaries.
 
 `aotools install`'s download flow fetches over HTTPS via `curl -k`, since this MiSTer's buildroot has no CA certificate bundle installed — the same tradeoff the Go toolchain download in the build instructions below makes. Nothing is compiled on-device by aotools itself; embedding these binaries inside the aotools binary would both bloat it and raise licensing questions this project has no standing to answer.
 
