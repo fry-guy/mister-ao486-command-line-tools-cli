@@ -35,6 +35,8 @@ Several key functionalities of `aotools` rely on external programs and data file
 
 `aotools install` can instead download all of them from known community-hosted sources, the same way installers such as `update_all.sh` handle content they cannot bundle themselves. It asks first, then requires pressing Enter to proceed or Esc to cancel before downloading.
 
+Without an internet connection on the MiSTer itself, the table below doubles as a manual install guide: fetch each file from its listed source on another machine, then copy it to the exact `Location` path shown, via USB drive, WinSCP, or similar. `aotools doctor` confirms afterward that everything landed where it belongs.
+
 | File | Used by | Location | Source |
 |---|---|---|---|
 | `mtools` | Every VHD/floppy command | `/media/fat/linux/mtools` | github.com/fry-guy/mister-ao486-command-line-tools-cli |
