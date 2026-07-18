@@ -101,6 +101,37 @@ func promptLine(prompt string) string {
 	return strings.TrimRight(line, "\r\n")
 }
 
+// promptDeleteSource offers to remove the original source -- an
+// archive file or a plain folder -- once its contents have been
+// fully copied into a VHD or floppy image. Both source kinds get the
+// identical prompt and default (no); a folder is removed recursively
+// since it won't be empty.
+func promptDeleteSource(source string) {
+	eprintln()
+	if isDir(source) {
+		eprintln("Source folder that can now be removed:")
+	} else {
+		eprintln("Source archive that can now be removed:")
+	}
+	eprintf("  %s\n", source)
+	answer := promptLine("Delete the original source? [y/N]: ")
+	if answer != "y" && answer != "Y" {
+		eprintln("Keeping source.")
+		return
+	}
+	var err error
+	if isDir(source) {
+		err = os.RemoveAll(source)
+	} else {
+		err = os.Remove(source)
+	}
+	if err != nil {
+		eprintf("Warning: could not delete %s: %v\n", source, err)
+	} else {
+		eprintln("Deleted.")
+	}
+}
+
 // ensureMtoolsSymlinks recreates the mcopy/mattrib -> mtools symlinks
 // mtools itself relies on to know which sub-command it's acting as
 // (mtools dispatches purely on argv[0]). Mirrors the auto-create-on-
@@ -140,6 +171,21 @@ func mbCeil(bytes int64) int64 {
 
 func kbCeil(bytes int64) int64 {
 	return (bytes + 1023) / 1024
+}
+
+// humanSize formats a byte count for display in progress output
+// (e.g. "512B", "3.4MB", "1.2GB").
+func humanSize(n int64) string {
+	const unit = 1024
+	if n < unit {
+		return fmt.Sprintf("%dB", n)
+	}
+	div, exp := int64(unit), 0
+	for m := n / unit; m >= unit; m /= unit {
+		div *= unit
+		exp++
+	}
+	return fmt.Sprintf("%.1f%cB", float64(n)/float64(div), "KMGTPE"[exp])
 }
 
 // countFiles counts regular files under root (recursively).

@@ -412,18 +412,7 @@ func injectDOSArchive(outPath, archive string) {
 		eprintf("                           %s\n", launchExe)
 	}
 
-	if !isDir(archive) {
-		eprintln()
-		eprintln("Source archive that can now be removed:")
-		eprintf("  %s\n", archive)
-		answer := promptLine("Delete the original source archive? [y/N]: ")
-		if answer == "y" || answer == "Y" {
-			os.Remove(archive)
-			eprintln("Deleted.")
-		} else {
-			eprintln("Keeping source archive.")
-		}
-	}
+	promptDeleteSource(archive)
 }
 
 // createWin31VHD implements the -win31 branch of mkvhd: clones
@@ -646,18 +635,7 @@ func createWin31VHD(outPath, archive string) {
 			os.RemoveAll(gameStage)
 		}
 
-		if !isDir(archive) {
-			eprintln()
-			eprintln("Source archive that can now be removed:")
-			eprintf("  %s\n", archive)
-			answer := promptLine("Delete the original source archive? [y/N]: ")
-			if answer == "y" || answer == "Y" {
-				os.Remove(archive)
-				eprintln("Deleted.")
-			} else {
-				eprintln("Keeping source archive.")
-			}
-		}
+		promptDeleteSource(archive)
 	}
 
 	// Boot sector merge happens LAST, after every loop-device operation

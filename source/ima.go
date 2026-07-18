@@ -216,6 +216,7 @@ func cmdIMACreate(args []string) {
 		if stageIsTemp {
 			os.RemoveAll(stageDir)
 		}
+		promptDeleteSource(source)
 	}
 
 	eprintf("Done: %s\n", outPath)
