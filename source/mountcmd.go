@@ -7,8 +7,68 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"sort"
 	"strings"
 )
+
+// resolveMountTarget returns the file `mount vhd`/`mount chd`/`mount
+// diskimage` should act on. Three forms are supported, matching how
+// the rest of aotools already resolves ambiguous file arguments (see
+// mglChoose/mglScanCandidates in mgl.go):
+//
+//   - An explicit file path (args[0], not a directory): used as-is.
+//   - No argument at all: scans the current directory for files
+//     matching exts.
+//   - An explicit directory (args[0] is a directory, not a file):
+//     scans that directory instead of the current one.
+//
+// In either scanning case, exactly one match is used automatically;
+// multiple matches prompt the user to pick (mglChoose); zero matches
+// is a clear, actionable error rather than a silent failure.
+func resolveMountTarget(args []string, exts map[string]bool, label string) string {
+	dir := "."
+	if len(args) > 0 {
+		if !isDir(args[0]) {
+			return args[0]
+		}
+		dir = args[0]
+	}
+	abs, err := filepath.Abs(dir)
+	if err != nil {
+		fatal("%v", err)
+	}
+	candidates := scanExtCandidates(abs, exts)
+	if len(candidates) == 0 {
+		extList := make([]string, 0, len(exts))
+		for e := range exts {
+			extList = append(extList, e)
+		}
+		sort.Strings(extList)
+		fatal("no %s file found in %s (looked for: %s). Run again with an explicit filename.",
+			label, abs, strings.Join(extList, ", "))
+	}
+	return filepath.Join(abs, mglChoose(candidates, label))
+}
+
+// scanExtCandidates returns the sorted names of regular files
+// directly under dir whose extension (case-insensitive) is in exts.
+func scanExtCandidates(dir string, exts map[string]bool) []string {
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		return nil
+	}
+	var out []string
+	for _, e := range entries {
+		if e.IsDir() {
+			continue
+		}
+		if exts[strings.ToLower(filepath.Ext(e.Name()))] {
+			out = append(out, e.Name())
+		}
+	}
+	sort.Strings(out)
+	return out
+}
 
 // cmdMountVHD implements `aotools mount vhd <name.vhd>`. All
 // human-facing narration goes to stderr; the resulting mountpoint
@@ -17,11 +77,8 @@ import (
 // never change its parent shell's own working directory, so the cd
 // itself has to happen in the wrapper, not here).
 func cmdMountVHD(args []string) {
-	if len(args) == 0 {
-		eprintln("Usage: aotools mount vhd <name.vhd>")
-		os.Exit(1)
-	}
-	vhd, err := filepath.Abs(args[0])
+	target := resolveMountTarget(args, map[string]bool{".vhd": true}, "VHD (.vhd)")
+	vhd, err := filepath.Abs(target)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -65,11 +122,8 @@ func cmdUmountVHD() {
 // `mkfs.vfat -I`), so this is a plain loop mount with no partition
 // offset needed.
 func cmdMountIMA(args []string) {
-	if len(args) == 0 {
-		eprintln("Usage: aotools mount diskimage <name.ima>")
-		os.Exit(1)
-	}
-	ima, err := filepath.Abs(args[0])
+	target := resolveMountTarget(args, map[string]bool{".ima": true, ".img": true}, "disk image (.ima/.img)")
+	ima, err := filepath.Abs(target)
 	if err != nil {
 		fatal("%v", err)
 	}
@@ -110,12 +164,9 @@ func cmdUmountIMA() {
 // it read-only. The extracted copy lives on /media/fat (not /tmp)
 // since large discs could exhaust RAM-backed scratch space.
 func cmdMountCHD(args []string) {
-	if len(args) == 0 {
-		eprintln("Usage: aotools mount chd <name.chd>")
-		os.Exit(1)
-	}
-	if !fileExists(args[0]) {
-		fatal("file not found: %s", args[0])
+	target := resolveMountTarget(args, map[string]bool{".chd": true}, "CHD (.chd)")
+	if !fileExists(target) {
+		fatal("file not found: %s", target)
 	}
 	if !fileExists(chdmanBin) {
 		fatal("chdman not found or not executable at %s", chdmanBin)
@@ -123,7 +174,7 @@ func cmdMountCHD(args []string) {
 	if isMounted(chdMountPoint) {
 		fatal("%s is already mounted. Run 'umountchd' first.", chdMountPoint)
 	}
-	chd, err := filepath.Abs(args[0])
+	chd, err := filepath.Abs(target)
 	if err != nil {
 		fatal("%v", err)
 	}
