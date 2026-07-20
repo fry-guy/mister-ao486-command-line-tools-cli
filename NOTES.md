@@ -56,11 +56,11 @@ aotools resize vhd <name.vhd>
 aotools create mgl -dos|-win31 "Display Name" [source_folder]
 aotools create chd <input.iso|.cue|.bin|.gdi> <output.chd>
 aotools create diskimage <name.ima> [source] [-s size]
-aotools mount vhd <name.vhd>            (or `mountvhd <name.vhd>`)
+aotools mount vhd [name.vhd|dir]         (or `mountvhd [name.vhd]`)
 aotools umount vhd                      (or `umountvhd`)
-aotools mount chd <name.chd>            (or `mountchd <name.chd>`)
+aotools mount chd [name.chd|dir]         (or `mountchd [name.chd]`)
 aotools umount chd                      (or `umountchd`)
-aotools mount diskimage <name.ima>
+aotools mount diskimage [name.ima|dir]
 aotools umount diskimage
 aotools install                         one-time: wire shell functions + PATH into every future shell
 aotools uninstall                       reverses install (removes the user-startup.sh wiring only)
@@ -69,6 +69,8 @@ aotools doctor                          reports on qemu/chdman/templates/mtools/
 ```
 
 Every command follows `<verb> <noun>`: `create`/`resize`/`mount`/`umount`, followed by what it acts on (`vhd`/`mgl`/`chd`/`diskimage`). See the CLI restructuring section below for the earlier, inconsistent layout this replaced.
+
+Every `mount` command's file argument is optional. Given a directory instead of a file, it scans inside that directory; given nothing at all, it scans the current directory. Exactly one matching file (`.vhd`, `.chd`, or `.ima`/`.img`) mounts automatically; more than one prompts for a choice, reusing the same numbered-list picker (`mglChoose`) `create mgl` already uses for ambiguous sources; zero matches is a clear error rather than a silent one. `resolveMountTarget`/`scanExtCandidates` (`mountcmd.go`) implement this, shared by all three mount commands. Getting this to work correctly through the shell wrapper required a fix in `shellinit.go` too: `aotools()`'s "mount vhd"/"mount chd"/"mount diskimage" cases (and the legacy `mountvhd`/`mountchd` wrappers) used to always forward a positional argument to the real binary, even when none was given -- bash has no way to tell "zero arguments" apart from "one empty-string argument" without checking `$#` explicitly, so an omitted filename was silently arriving as an empty string rather than truly no argument at all, defeating auto-detection. They now check `$#` first and only forward an argument when one was actually given.
 
 ## VHD sizing and partitioning
 

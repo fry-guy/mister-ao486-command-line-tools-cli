@@ -129,24 +129,27 @@ Creates a formatted floppy image, optionally injecting the contents of `<source>
 ### `mount vhd` / `mount chd` / `mount diskimage` — open a disk image as a folder
 
 ```
-aotools mount vhd <name.vhd>            or:  mountvhd <name.vhd>
+aotools mount vhd [name.vhd]            or:  mountvhd [name.vhd]
 aotools umount vhd                      or:  umountvhd
-aotools mount chd <name.chd>            or:  mountchd <name.chd>
+aotools mount chd [name.chd]            or:  mountchd [name.chd]
 aotools umount chd                      or:  umountchd
-aotools mount diskimage <name.ima>
+aotools mount diskimage [name.ima]
 aotools umount diskimage
 ```
 
 Mounts the contents of a `.vhd`, `.chd`, or `.ima` as a real, browsable folder and changes into it automatically. Once `aotools` is installed, both forms on the `vhd`/`chd` lines above are equivalent — `aotools mount vhd`/`umount vhd`/`mount chd`/`umount chd` and their shorthand equivalents share the same underlying shell function and can be used interchangeably; `mount diskimage`/`umount diskimage` have no separate shorthand form. Pair each `mount` with the matching `umount` when finished; this returns to the original directory and cleans up.
 
+The filename is optional. Leave it off and the matching command looks for a single `.vhd`/`.chd`/`.ima` (or `.img`) file in the current directory and mounts it automatically; if there's more than one, it lists them and asks which to use; if there's none, it says so instead of guessing. You can also point it at a folder instead of a specific file (`mountvhd somefolder/`) to search there instead of the current directory.
+
 Example:
 ```
-mountvhd mygame.vhd      # now inside the VHD's contents
+cd mygamefolder          # contains exactly one .vhd
+mountvhd                 # finds and mounts it automatically, now inside its contents
 cp newpatch.exe .
 umountvhd                # back to the original directory, unmounted
 ```
 
-Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD, CHD, or disk image is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. A confirmation message is printed after conversion. Files edited outside a mount are left untouched.
+Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD, CHD, or disk image is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. On exit, `nano` prints `[FILENAME.EXT converted to DOS format for real hardware compatibility]` for each file it converted. Files edited outside a mount are left untouched.
 
 ### `install` / `uninstall` / `shellinit` / `doctor` — setup and diagnostics
 
