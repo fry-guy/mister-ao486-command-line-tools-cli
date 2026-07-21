@@ -62,13 +62,14 @@ aotools mount chd [name.chd|dir]         (or `mountchd [name.chd]`)
 aotools umount chd                      (or `umountchd`)
 aotools mount diskimage [name.ima|dir]
 aotools umount diskimage
+aotools umount                          unmounts whichever of vhd/chd/diskimage you're currently in
 aotools install                         one-time: wire shell functions + PATH into every future shell
 aotools uninstall                       reverses install (removes the user-startup.sh wiring only)
 aotools shellinit                       prints the shell functions; used internally by install
 aotools doctor                          reports on qemu/chdman/templates/mtools/etc. -- see README.md
 ```
 
-Every command follows `<verb> <noun>`: `create`/`resize`/`mount`/`umount`, followed by what it acts on (`vhd`/`mgl`/`chd`/`diskimage`). See the CLI restructuring section below for the earlier, inconsistent layout this replaced.
+Every command follows `<verb> <noun>`: `create`/`resize`/`mount`/`umount`, followed by what it acts on (`vhd`/`mgl`/`chd`/`diskimage`). See the CLI restructuring section below for the earlier, inconsistent layout this replaced. `umount` alone (no type) auto-detects: `cmdUmountAuto` (`mountcmd.go`) checks `$PWD` against the three mount points first, falling back to whichever single type `isMounted` finds actually mounted if `$PWD` doesn't match (e.g. you `cd`'d away first); if more than one type is mounted and `$PWD` doesn't disambiguate, it refuses to guess and asks for an explicit type. The shell wrapper (`shellinit.go`) does its own `$PWD`-based detection before ever calling into the binary, same as it already does for the explicit `umount vhd`/`chd`/`diskimage` cases, so the cd-back-to-where-you-were behavior still applies to the bare form too; calling the binary directly by its full path (bypassing the shell wrapper) still can't cd you anywhere, same existing limitation as every other mount/umount command.
 
 Every `mount` command's file argument is optional. Given a directory instead of a file, it scans inside that directory; given nothing at all, it scans the current directory. Exactly one matching file (`.vhd`, `.chd`, or `.ima`/`.img`) mounts automatically; more than one prompts for a choice, reusing the same numbered-list picker (`mglChoose`) `create mgl` already uses for ambiguous sources; zero matches is a clear error rather than a silent one. `resolveMountTarget`/`scanExtCandidates` (`mountcmd.go`) implement this, shared by all three mount commands. Getting this to work correctly through the shell wrapper required a fix in `shellinit.go` too: `aotools()`'s "mount vhd"/"mount chd"/"mount diskimage" cases (and the legacy `mountvhd`/`mountchd` wrappers) used to always forward a positional argument to the real binary, even when none was given -- bash has no way to tell "zero arguments" apart from "one empty-string argument" without checking `$#` explicitly, so an omitted filename was silently arriving as an empty string rather than truly no argument at all, defeating auto-detection. They now check `$#` first and only forward an argument when one was actually given.
 
