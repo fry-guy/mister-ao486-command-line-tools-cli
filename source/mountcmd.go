@@ -248,6 +248,63 @@ func cmdUmountCHD() {
 	eprintln("Unmounted and cleaned up.")
 }
 
+// cmdUmountAuto implements bare `aotools umount` with no vhd/chd/
+// diskimage argument: it figures out which one you're actually in
+// and unmounts that, instead of making you specify it. This exists
+// mainly for direct-binary invocation (full path, no shell
+// integration loaded) -- the shell wrapper (shellinit.go) resolves
+// the type from $PWD itself before ever reaching here, since only it
+// can cd the parent shell back to where it was; calling the binary
+// directly bypasses that and lands in this function instead.
+//
+// Detection order: current directory first (matches whichever mount
+// you're actually sitting inside, mirroring the shell wrapper's own
+// logic), then -- if cwd doesn't tell us -- whichever single type is
+// actually mounted. If more than one type is mounted and cwd doesn't
+// disambiguate, this refuses to guess and asks for an explicit type.
+func cmdUmountAuto() {
+	if wd, err := os.Getwd(); err == nil {
+		switch {
+		case wd == vhdMountPoint || strings.HasPrefix(wd, vhdMountPoint+"/"):
+			cmdUmountVHD()
+			return
+		case wd == chdMountPoint || strings.HasPrefix(wd, chdMountPoint+"/"):
+			cmdUmountCHD()
+			return
+		case wd == imaMountPoint || strings.HasPrefix(wd, imaMountPoint+"/"):
+			cmdUmountIMA()
+			return
+		}
+	}
+
+	var mounted []string
+	if isMounted(vhdMountPoint) {
+		mounted = append(mounted, "vhd")
+	}
+	if isMounted(chdMountPoint) {
+		mounted = append(mounted, "chd")
+	}
+	if isMounted(imaMountPoint) {
+		mounted = append(mounted, "diskimage")
+	}
+
+	switch len(mounted) {
+	case 0:
+		fatal("nothing is currently mounted (vhd, chd, or diskimage)")
+	case 1:
+		switch mounted[0] {
+		case "vhd":
+			cmdUmountVHD()
+		case "chd":
+			cmdUmountCHD()
+		case "diskimage":
+			cmdUmountIMA()
+		}
+	default:
+		fatal("multiple types are mounted (%s) and the current directory doesn't indicate which -- run 'aotools umount <vhd|chd|diskimage>' explicitly", strings.Join(mounted, ", "))
+	}
+}
+
 func isMounted(path string) bool {
 	f, err := os.Open("/proc/mounts")
 	if err != nil {

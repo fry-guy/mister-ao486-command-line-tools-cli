@@ -21,6 +21,7 @@
 //	aotools umount chd
 //	aotools mount diskimage <name.ima>
 //	aotools umount diskimage
+//	aotools umount                        (auto-detects vhd/chd/diskimage)
 //	aotools install
 //	aotools uninstall
 //	aotools shellinit
@@ -119,8 +120,8 @@ func run() {
 		}
 	case "umount":
 		if len(os.Args) < 3 {
-			printTopUsage()
-			os.Exit(1)
+			cmdUmountAuto()
+			return
 		}
 		switch os.Args[2] {
 		case "vhd":
@@ -168,6 +169,7 @@ Usage:
   aotools umount chd
   aotools mount diskimage <name.ima>
   aotools umount diskimage
+  aotools umount                        (auto-detects vhd/chd/diskimage)
   aotools install
   aotools uninstall
   aotools shellinit

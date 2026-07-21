@@ -43,7 +43,11 @@ aotools() {
     case "$1 $2" in
         "mount vhd")
             local mp
-            mp="$("$AOTOOLS" mount vhd "$3")" || return 1
+            if [ $# -ge 3 ]; then
+                mp="$("$AOTOOLS" mount vhd "$3")" || return 1
+            else
+                mp="$("$AOTOOLS" mount vhd)" || return 1
+            fi
             AOTOOLS_VHD_PREV_DIR="$PWD"
             cd "$mp" || return 1
             ;;
@@ -58,7 +62,11 @@ aotools() {
             ;;
         "mount chd")
             local mp
-            mp="$("$AOTOOLS" mount chd "$3")" || return 1
+            if [ $# -ge 3 ]; then
+                mp="$("$AOTOOLS" mount chd "$3")" || return 1
+            else
+                mp="$("$AOTOOLS" mount chd)" || return 1
+            fi
             AOTOOLS_CHD_PREV_DIR="$PWD"
             cd "$mp" || return 1
             ;;
@@ -73,7 +81,11 @@ aotools() {
             ;;
         "mount diskimage")
             local mp
-            mp="$("$AOTOOLS" mount diskimage "$3")" || return 1
+            if [ $# -ge 3 ]; then
+                mp="$("$AOTOOLS" mount diskimage "$3")" || return 1
+            else
+                mp="$("$AOTOOLS" mount diskimage)" || return 1
+            fi
             AOTOOLS_IMA_PREV_DIR="$PWD"
             cd "$mp" || return 1
             ;;
@@ -86,6 +98,38 @@ aotools() {
             "$AOTOOLS" umount diskimage
             unset AOTOOLS_IMA_PREV_DIR
             ;;
+        "umount ")
+            # Bare "aotools umount" / "umount", no vhd/chd/diskimage
+            # given -- figure out which one you're actually sitting
+            # in from $PWD (same mount paths nano() checks) and
+            # dispatch to that case above, so the cd-back-to-where-
+            # you-were behavior still applies. Falls back to whichever
+            # type this shell still has mount state for if $PWD
+            # doesn't match (e.g. it was mounted from another shell).
+            local target=""
+            case "$PWD" in
+                /tmp/vhd_mount|/tmp/vhd_mount/*)
+                    target=vhd ;;
+                /media/fat/linux/.mountchd_mount|/media/fat/linux/.mountchd_mount/*)
+                    target=chd ;;
+                /tmp/ima_mount|/tmp/ima_mount/*)
+                    target=diskimage ;;
+            esac
+            if [ -z "$target" ]; then
+                if [ -n "$AOTOOLS_VHD_PREV_DIR" ]; then
+                    target=vhd
+                elif [ -n "$AOTOOLS_CHD_PREV_DIR" ]; then
+                    target=chd
+                elif [ -n "$AOTOOLS_IMA_PREV_DIR" ]; then
+                    target=diskimage
+                fi
+            fi
+            if [ -z "$target" ]; then
+                echo "aotools umount: not currently inside a mounted vhd, chd, or diskimage" >&2
+                return 1
+            fi
+            aotools umount "$target"
+            ;;
         *)
             "$AOTOOLS" "$@"
             ;;
@@ -96,9 +140,9 @@ aotools() {
 # Toolkit script names. All of these just call the aotools() function
 # above, so they share its exact cd behavior and state; they are not
 # a second, separately-behaving code path.
-mountvhd()   { aotools mount vhd "$1"; }
+mountvhd()   { if [ $# -ge 1 ]; then aotools mount vhd "$1"; else aotools mount vhd; fi; }
 umountvhd()  { aotools umount vhd; }
-mountchd()   { aotools mount chd "$1"; }
+mountchd()   { if [ $# -ge 1 ]; then aotools mount chd "$1"; else aotools mount chd; fi; }
 umountchd()  { aotools umount chd; }
 mkvhd() {
     if [ "$1" = "-dos" ] || [ "$1" = "-win31" ]; then
@@ -123,7 +167,7 @@ mkima()     { aotools create diskimage "$@"; }
 nano() {
     command nano "$@"
     local rc=$?
-    local f rp converted=0
+    local f rp
     for f in "$@"; do
         case "$f" in
             -*) continue ;;
@@ -134,14 +178,11 @@ nano() {
             /tmp/vhd_mount/*|/media/fat/linux/.mountchd_mount/*|/tmp/ima_mount/*)
                 if command -v unix2dos >/dev/null 2>&1; then
                     unix2dos "$f" >/dev/null 2>&1
-                    converted=1
+                    echo "[$(basename "$f") converted to DOS format]" >&2
                 fi
                 ;;
         esac
     done
-    if [ "$converted" = "1" ]; then
-        echo "(converted to DOS line endings for real hardware compatibility)" >&2
-    fi
     return $rc
 }
 `
