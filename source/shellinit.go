@@ -178,7 +178,7 @@ nano() {
             /tmp/vhd_mount/*|/media/fat/linux/.mountchd_mount/*|/tmp/ima_mount/*)
                 if command -v unix2dos >/dev/null 2>&1; then
                     unix2dos "$f" >/dev/null 2>&1
-                    echo "[$(basename "$f") converted to DOS format]" >&2
+                    echo "$(basename "$f") converted to DOS format" >&2
                 fi
                 ;;
         esac
