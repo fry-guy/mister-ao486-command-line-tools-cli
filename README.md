@@ -152,7 +152,7 @@ cp newpatch.exe .
 umountvhd                # back to the original directory, unmounted
 ```
 
-Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD, CHD, or disk image is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. On exit, `nano` prints `[FILENAME.EXT converted to DOS format]` for each file it converted. Files edited outside a mount are left untouched.
+Editing text files (`CONFIG.SYS`, `AUTOEXEC.BAT`, etc.) with `nano` while a VHD, CHD, or disk image is mounted automatically converts them to DOS line endings (CRLF) on exit. Real MS-DOS and Windows 3.1 require CRLF, while `nano` over SSH saves plain Unix LF by default; this conversion happens without any extra step. On exit, `nano` prints `FILENAME.EXT converted to DOS format` for each file it converted. Files edited outside a mount are left untouched.
 
 ### `install` / `uninstall` / `shellinit` / `doctor` — setup and diagnostics
 
